@@ -1,8 +1,9 @@
 //! demo-provider 服务提供方入口：注册 + 心跳 + 提供业务 API（示例，非 velox 子系统）。
 //!
-//! 职责边界：装配层。配置加载 → 日志初始化 → 领域对象 → 后台任务 → HTTP server。
-//! 业务流程在 lifecycle.rs / greeting.rs，HTTP 协议转换在本文件。
+//! 职责边界：装配层（见开发规范第 2 节）。配置加载 → 日志初始化 → 领域对象 →
+//! 后台任务 → HTTP server；HTTP 协议转换在 api.rs。
 
+mod api;
 mod config;
 mod error;
 mod greeting;
@@ -11,9 +12,6 @@ mod lifecycle;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::routing::get;
-use axum::{Json, Router};
-use serde_json::{json, Value};
 use tokio::sync::watch;
 use tracing::info;
 
@@ -29,7 +27,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let cfg = Config::load(std::env::args().nth(1).as_deref())?;
+    // 配置文件路径为第一个位置参数；缺省时全部使用内置默认值
+    let config_path = std::env::args().nth(1);
+    let cfg = Config::load(config_path.as_deref())?;
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -49,31 +49,17 @@ async fn run() -> anyhow::Result<()> {
     let lifecycle = Arc::new(Lifecycle::new(cfg.registry.clone(), http.clone()));
     let greeting = Arc::new(Greeting::new());
 
-    // 后台任务：注册 + 心跳
-    {
-        let lifecycle = Arc::clone(&lifecycle);
-        let shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
-            lifecycle.run(shutdown).await;
-        });
-    }
+    // 后台任务：注册 + 心跳（registry 可能晚于本服务启动，内部自带退避重试）
+    tokio::spawn(Arc::clone(&lifecycle).run(shutdown_rx.clone()));
 
     // 后台任务：周期刷新问候语模板
-    {
-        let greeting = Arc::clone(&greeting);
-        let cc = cfg.config_center.clone();
-        let shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
-            greeting
-                .run_config_refresh(cc, http.clone(), shutdown)
-                .await;
-        });
-    }
+    tokio::spawn(Arc::clone(&greeting).run_config_refresh(
+        cfg.config_center.clone(),
+        http.clone(),
+        shutdown_rx.clone(),
+    ));
 
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/greet/{name}", get(greet))
-        .with_state(greeting.clone());
+    let app = api::router(greeting, lifecycle);
 
     let addr: SocketAddr = cfg
         .server
@@ -84,6 +70,7 @@ async fn run() -> anyhow::Result<()> {
     info!(
         version = env!("CARGO_PKG_VERSION"),
         addr = %addr,
+        config = config_path.as_deref().unwrap_or("<内置默认值>"),
         service = %cfg.registry.service_name,
         registry = %cfg.registry.endpoint,
         config_center = %cfg.config_center.endpoint,
@@ -96,24 +83,9 @@ async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 关停：广播给各后台任务，等它们自行收尾。
+/// 关停：ctrl_c → watch 广播 true → 各后台任务自行收尾 → server 结束。
 async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
     let _ = tokio::signal::ctrl_c().await;
-    info!("shutdown signal received");
+    info!("收到关停信号，开始优雅退出");
     let _ = shutdown_tx.send(true);
-}
-
-async fn healthz() -> Json<Value> {
-    Json(json!({ "status": "ok", "service": "demo-provider" }))
-}
-
-async fn greet(
-    axum::extract::Path(name): axum::extract::Path<String>,
-    axum::extract::State(greeting): axum::extract::State<Arc<Greeting>>,
-) -> Json<Value> {
-    Json(json!({
-        "message": greeting.render(&name),
-        "template": greeting.template(),
-        "is_from_config_center": greeting.is_from_config_center(),
-    }))
 }

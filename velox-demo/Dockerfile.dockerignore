@@ -1,0 +1,11 @@
+# BuildKit per-Dockerfile ignore（与 velox-demo/Dockerfile 同名 + .dockerignore 后缀），
+# 模式相对构建上下文根（仓库根）。旧版构建器（非 BuildKit）不识别本文件，
+# 需改为在仓库根放 .dockerignore（见 velox-demo/README.md 已知限制）。
+
+.git
+.run
+logs
+dist
+data
+target
+velox-mono

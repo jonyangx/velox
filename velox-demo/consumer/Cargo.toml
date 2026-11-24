@@ -1,0 +1,24 @@
+[package]
+name = "demo-consumer"
+description = "velox-demo 服务消费方：注册 + 心跳 + 经 velox-mesh 调用 demo-provider（示例，非 velox 子系统）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
