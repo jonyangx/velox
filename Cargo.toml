@@ -4,6 +4,7 @@ members = [
     "velox-mesh",
     "velox-config",
     "velox-registry",
+    "velox-demo/provider",
 ]
 
 [workspace.package]
