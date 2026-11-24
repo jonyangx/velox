@@ -1,0 +1,7 @@
+# velox-config 开发默认配置（生产配置不入库，见开发规范第 5 节）
+
+[server]
+addr = "0.0.0.0:8200"
+
+[storage]
+data_dir = "./data"
