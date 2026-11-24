@@ -39,7 +39,7 @@ async fn put_item(
     Path((namespace, key)): Path<(String, String)>,
     Json(value): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    store.put(&namespace, &key, value)?;
+    store.put(&namespace, &key, value).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -47,7 +47,7 @@ async fn delete_item(
     State(store): State<Arc<Store>>,
     Path((namespace, key)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
-    let removed = store.delete(&namespace, &key)?;
+    let removed = store.delete(&namespace, &key).await?;
     if removed {
         Ok(Json(json!({ "ok": true })))
     } else {
