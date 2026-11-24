@@ -38,22 +38,36 @@ async fn run() -> anyhow::Result<()> {
         cfg.registry.heartbeat_ttl_secs,
     )));
 
-    // 后台任务：周期剔除心跳超时实例（生命周期管理的核心）
-    {
+    // 关停广播通道：ctrl_c 后通知后台剔除任务优雅退出（开发规范第 3.3 节），
+    // 机制与 velox-demo/provider/src/lifecycle.rs 一致（`watch` 广播 + `changed()` 感知）
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // 后台任务：周期剔除心跳超时实例（生命周期管理的核心，带优雅退出通道）
+    let sweeper = {
         let registry = Arc::clone(&registry);
         let interval = Duration::from_secs(cfg.registry.sweep_interval_secs);
+        let mut shutdown = shutdown_rx;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
-                ticker.tick().await;
-                let removed = registry.sweep_expired();
-                if removed > 0 {
-                    tracing::warn!(removed, "swept expired instances");
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        if *shutdown.borrow_and_update() {
+                            info!("剔除任务收到关停信号，退出");
+                            return;
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        let removed = registry.sweep_expired();
+                        if removed > 0 {
+                            tracing::warn!(removed, "swept expired instances");
+                        }
+                    }
                 }
             }
-        });
-    }
+        })
+    };
 
     let app = api::router(registry);
     let addr: SocketAddr = cfg
@@ -71,12 +85,16 @@ async fn run() -> anyhow::Result<()> {
     );
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await?;
+    // 等后台剔除任务确认退出，避免进程退出时它被静默 drop
+    let _ = sweeper.await;
     Ok(())
 }
 
-async fn shutdown_signal() {
+/// 等待 ctrl_c 并通过 `watch` 通道向后台任务广播关停信号。
+async fn shutdown_signal(tx: tokio::sync::watch::Sender<bool>) {
     let _ = tokio::signal::ctrl_c().await;
     info!("shutdown signal received");
+    let _ = tx.send(true);
 }

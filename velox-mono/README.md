@@ -13,7 +13,7 @@
 | [velox-mesh](../velox-mesh/) | 服务网关：流量转发、服务发现、负载均衡 | 宿主机 daemon（per-host sidecar） | [定位说明](docs/subsystems.md#velox-mesh--服务网关) |
 | [velox-config](../velox-config/) | 配置中心：服务治理与系统配置的存储与分发 | 独立服务（单实例起步） | [定位说明](docs/subsystems.md#velox-config--配置中心) |
 | [velox-registry](../velox-registry/) | 服务注册中心：服务注册、心跳、生命周期管理 | 独立服务（单实例起步） | [定位说明](docs/subsystems.md#velox-registry--服务注册中心) |
-| [velox-demo](../velox-demo/) | 示例与验收环境 | 容器 | 待建 |
+| [velox-demo](../velox-demo/) | 示例与验收环境 | 容器 | [README](../velox-demo/README.md) |
 
 ## 文档导航
 

@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use uuid::Uuid;
 
 /// registry 返回的实例视图（仅 mesh 感兴趣的字段，与 registry 的 InstanceView 对齐）。
@@ -54,6 +56,14 @@ impl Snapshot {
     }
 }
 
+/// 单服务实例拉取的并发上限。
+///
+/// 取舍：registry 是单一中心组件，无上限并发会对它造成瞬时连接风暴
+/// （fd 与内存压力）；而服务数通常在几十量级，16 路并发已能把
+/// 「1 + N」次串行往返压缩到约 N/16 批，刷新延迟不再随服务数线性增长。
+/// 同时 reqwest 客户端按目标地址复用连接池，16 也在单主机连接数的合理区间内。
+const INSTANCE_FETCH_CONCURRENCY: usize = 16;
+
 pub struct Discovery {
     endpoint: String,
     http: reqwest::Client,
@@ -78,6 +88,12 @@ impl Discovery {
     }
 
     /// 全量刷新快照；成功返回健康实例总数。
+    ///
+    /// 失败语义分两级：
+    /// - 服务列表拉取失败：整体失败（沿用最后一次成功快照的降级语义，由调用方告警）；
+    /// - 单个服务的实例拉取失败：仅该服务降级为空列表并告警，其余服务正常入库。
+    ///   取舍：mesh 的职责是尽力转发，个别服务的实例数据缺失只影响该服务本身，
+    ///   不应让整次刷新失败、把所有服务都打回旧快照。
     pub async fn refresh(&self) -> anyhow::Result<usize> {
         let services: Vec<String> = self
             .http
@@ -88,32 +104,48 @@ impl Discovery {
             .json()
             .await?;
 
+        // 所有服务的实例拉取并发进行，用 buffer_unordered 限流（并发上限见常量注释）
+        let fetches = services.into_iter().map(|service| {
+            let http = self.http.clone();
+            let url = format!(
+                "{}/api/v1/registry/services/{service}/instances?healthy=true",
+                self.endpoint
+            );
+            async move {
+                let instances = fetch_instances(http, url).await;
+                (service, instances)
+            }
+        });
+        let mut results =
+            futures::stream::iter(fetches).buffer_unordered(INSTANCE_FETCH_CONCURRENCY);
+
         let mut map = BTreeMap::new();
         let mut total = 0usize;
-        for service in services {
-            let instances: Vec<RegistryInstance> = self
-                .http
-                .get(format!(
-                    "{}/api/v1/registry/services/{service}/instances?healthy=true",
-                    self.endpoint
-                ))
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-            total += instances.len();
-            map.insert(
-                service,
-                instances
-                    .into_iter()
-                    .map(|i| Endpoint {
-                        instance_id: i.id,
-                        address: i.address,
-                        port: i.port,
-                    })
-                    .collect(),
-            );
+        while let Some((service, instances)) = results.next().await {
+            match instances {
+                Ok(list) => {
+                    total += list.len();
+                    map.insert(
+                        service,
+                        list.into_iter()
+                            .map(|i| Endpoint {
+                                instance_id: i.id,
+                                address: i.address,
+                                port: i.port,
+                            })
+                            .collect(),
+                    );
+                }
+                Err(e) => {
+                    // 单服务失败降级为空列表，不拖垮整次刷新（取舍见方法注释）
+                    tracing::warn!(
+                        service = %service,
+                        error = %e,
+                        "拉取服务实例失败，该服务降级为空列表"
+                    );
+                    map.insert(service, Vec::new());
+                }
+            }
         }
 
         let snapshot = Arc::new(Snapshot {
@@ -141,15 +173,45 @@ impl Discovery {
     }
 }
 
+/// 拉取单个服务的健康实例列表。
+async fn fetch_instances(
+    http: reqwest::Client,
+    url: String,
+) -> anyhow::Result<Vec<RegistryInstance>> {
+    Ok(http
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+
 /// 后台刷新循环：失败只告警，不中断服务（降级到旧快照）。
-pub async fn run_poller(discovery: Arc<Discovery>, interval: Duration) {
+///
+/// 通过 `shutdown` 通道实现优雅退出（开发规范第 3.3 节），
+/// 风格与 velox-demo/provider 的 lifecycle 一致：`watch` 广播 + `changed()` 感知。
+pub async fn run_poller(
+    discovery: Arc<Discovery>,
+    interval: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        ticker.tick().await;
-        match discovery.refresh().await {
-            Ok(n) => tracing::debug!(instances = n, "registry snapshot refreshed"),
-            Err(e) => tracing::warn!(error = %e, "registry unreachable, serving stale snapshot"),
+        tokio::select! {
+            _ = shutdown.changed() => {
+                if *shutdown.borrow_and_update() {
+                    tracing::info!("快照刷新任务收到关停信号，退出");
+                    return;
+                }
+            }
+            _ = ticker.tick() => {
+                match discovery.refresh().await {
+                    Ok(n) => tracing::debug!(instances = n, "registry snapshot refreshed"),
+                    Err(e) => tracing::warn!(error = %e, "registry unreachable, serving stale snapshot"),
+                }
+            }
         }
     }
 }

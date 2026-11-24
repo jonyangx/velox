@@ -156,4 +156,4 @@ v0.1 内存注册表 + TTL 剔除 → v0.2 状态持久化、watch 推送 → v0
 
 ## velox-demo —— 示例与验收环境
 
-**定位**：提供可运行的示例业务服务（容器化）与端到端验收脚本，验证 mesh / registry / config 协同工作。当前为预留目录，随 v0.4 里程碑建设。
+**定位**：提供可运行的示例业务服务（容器化）与端到端验收脚本，验证 mesh / registry / config 协同工作。已建成：`demo-provider` / `demo-consumer` 两个示例服务（注册 + 心跳 + 经 mesh 转发）、`docker-compose.yml` 一键拉起、`scripts/acceptance.sh` 端到端验收，详见 [velox-demo/README.md](../../velox-demo/README.md)。

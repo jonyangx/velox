@@ -67,12 +67,19 @@ async fn run() -> anyhow::Result<()> {
         started_at: Instant::now(),
     });
 
-    // 后台任务：周期刷新服务快照
-    {
+    // 关停广播通道：ctrl_c 后通知后台任务与两个 HTTP server 优雅退出（开发规范第 3.3 节）
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // 后台任务：周期刷新服务快照（带优雅退出通道）
+    let poller = {
         let discovery = Arc::clone(&discovery);
         let interval = Duration::from_secs(cfg.registry.poll_secs);
-        tokio::spawn(discovery::run_poller(discovery, interval));
-    }
+        tokio::spawn(discovery::run_poller(
+            discovery,
+            interval,
+            shutdown_rx.clone(),
+        ))
+    };
 
     let inbound_app = api::inbound_router(Arc::clone(&state));
     let admin_app = api::admin_router(state);
@@ -99,22 +106,42 @@ async fn run() -> anyhow::Result<()> {
         "velox-mesh started (per-host daemon)"
     );
 
-    // 数据面与管理面并行服务；v0.1 ctrl_c 直接中止（优雅排空列入 v0.2）
-    let inbound = tokio::spawn(async move {
-        if let Err(e) = axum::serve(inbound_listener, inbound_app).await {
-            tracing::error!(error = %e, "inbound server exited with error");
-        }
-    });
-    let admin = tokio::spawn(async move {
-        if let Err(e) = axum::serve(admin_listener, admin_app).await {
-            tracing::error!(error = %e, "admin server exited with error");
-        }
-    });
+    // 数据面与管理面并行服务；收到关停信号后用 with_graceful_shutdown 排空在途请求，
+    // 替代原先的 abort() 硬中止
+    let inbound = {
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(inbound_listener, inbound_app)
+                .with_graceful_shutdown(async move {
+                    // 关停信号到达（或发送端关闭）即开始排空
+                    let _ = shutdown.changed().await;
+                })
+                .await
+            {
+                tracing::error!(error = %e, "inbound server exited with error");
+            }
+        })
+    };
+    let admin = {
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(admin_listener, admin_app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown.changed().await;
+                })
+                .await
+            {
+                tracing::error!(error = %e, "admin server exited with error");
+            }
+        })
+    };
 
     tokio::signal::ctrl_c().await?;
     info!("shutdown signal received");
-    inbound.abort();
-    admin.abort();
+    // 广播关停：两个 server 优雅排空在途请求，poller 退出刷新循环；
+    // 等全部任务确认退出后再结束进程
+    let _ = shutdown_tx.send(true);
+    let _ = poller.await;
     let _ = inbound.await;
     let _ = admin.await;
     Ok(())
