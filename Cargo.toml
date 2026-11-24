@@ -5,6 +5,7 @@ members = [
     "velox-config",
     "velox-registry",
     "velox-demo/provider",
+    "velox-demo/consumer",
 ]
 
 [workspace.package]
