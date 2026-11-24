@@ -25,3 +25,8 @@ rustc-ice-*.txt
 
 # velox runtime data (velox-config store)
 data/
+
+# velox 工程脚本运行时产物
+.run/
+logs/
+dist/

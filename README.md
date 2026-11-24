@@ -16,9 +16,17 @@
 
 ```bash
 rustup update          # 工具链由 rust-toolchain.toml 锁定
-cargo build --workspace
-cargo test --workspace
+
+cargo build --workspace      # 或 scripts/build.sh（支持 --release 与指定子系统）
+cargo test --workspace       # 或 scripts/test.sh（CI 门槛：fmt + clippy + build + test）
+
+scripts/run.sh start         # 按 registry → config → mesh 顺序启动全部服务
+scripts/run.sh status        # 查看各服务状态
+scripts/run.sh stop          # 反向顺序停止
+scripts/package.sh           # release 构建 + 打包 dist/velox-<版本>-<os>-<arch>.tar.gz
 ```
+
+工程脚本说明见 [scripts/README.md](scripts/README.md)。
 
 文档入口：[velox-mono/README.md](velox-mono/README.md)
 
