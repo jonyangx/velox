@@ -1,0 +1,4 @@
+# 工具链锁定：团队与 CI 必须使用同一版本（见 velox-mono/docs/development.md 第 1 节）
+# 当前锁定 stable 1.100.0；升级时在此注明并全团队同步
+[toolchain]
+channel = "stable"

@@ -1,0 +1,16 @@
+# demo-consumer 开发默认配置（镜像 demo-provider 的配置结构 + mesh 出口；生产配置不入库）
+# 运行：target/debug/demo-consumer velox-demo/consumer/config/demo-consumer.toml
+# 覆盖：VELOX_CONSUMER__<SECTION>__<FIELD> 环境变量（双下划线分层，见 velox-demo/README.md）
+
+[server]
+addr = "0.0.0.0:9100"
+
+[registry]
+endpoint = "http://127.0.0.1:8300"  # velox-registry
+service_name = "demo-consumer"
+advertise_host = "127.0.0.1"
+advertise_port = 9100
+heartbeat_interval_secs = 5
+
+[mesh]
+endpoint = "http://127.0.0.1:8100"  # velox-mesh 数据面（per-host sidecar，见架构文档 §3.1）

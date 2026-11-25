@@ -1,0 +1,91 @@
+# velox-demo 单机容器化：五服务一键拉起（架构文档 §3.1 per-host sidecar 的 host 网络模式）。
+#
+# 前提：Linux 宿主机 + BuildKit（docker 23+ 默认启用）。
+# 用法（在仓库根执行）：
+#   docker compose -f velox-demo/docker-compose.yml up --build [-d]
+#   docker compose -f velox-demo/docker-compose.yml down
+# 冒烟：curl -fsS http://127.0.0.1:9100/api/v1/consumer/greeting/velox
+# mac/windows 不支持 network_mode: host，需改端口映射 + host.docker.internal 变体（见 README）。
+
+name: velox-demo
+
+# 五个服务共用同一镜像；构建上下文 = 仓库根（Dockerfile 需 COPY 整个 workspace）
+x-image: &image
+  image: velox-demo:latest
+  build:
+    context: ..
+    dockerfile: velox-demo/Dockerfile
+
+services:
+  velox-registry:
+    <<: *image
+    network_mode: host
+    command: ["/opt/velox/bin/velox-registry", "/opt/velox/config/velox-registry.toml"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8300/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  velox-config:
+    <<: *image
+    network_mode: host
+    command: ["/opt/velox/bin/velox-config", "/opt/velox/config/velox-config.toml"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8200/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  velox-mesh:
+    <<: *image
+    network_mode: host
+    depends_on:
+      velox-registry:
+        condition: service_healthy
+      velox-config:
+        condition: service_healthy
+    command: ["/opt/velox/bin/velox-mesh", "/opt/velox/config/velox-mesh.toml"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  demo-provider:
+    <<: *image
+    network_mode: host
+    depends_on:
+      velox-registry:
+        condition: service_healthy
+      velox-config:
+        condition: service_healthy
+      velox-mesh:
+        condition: service_healthy
+    # demo 服务不额外设 env：镜像内配置默认值即为本 demo 拓扑（见 Dockerfile /opt/velox/config/）
+    command: ["/opt/velox/bin/demo-provider", "/opt/velox/config/demo-provider.toml"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  demo-consumer:
+    <<: *image
+    network_mode: host
+    depends_on:
+      velox-registry:
+        condition: service_healthy
+      velox-mesh:
+        condition: service_healthy
+    command: ["/opt/velox/bin/demo-consumer", "/opt/velox/config/demo-consumer.toml"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9100/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s

@@ -1,0 +1,19 @@
+# demo-provider 开发默认配置（与 velox-demo/provider/src/config.rs 内置默认值一致；生产配置不入库）
+# 运行：target/debug/demo-provider velox-demo/provider/config/demo-provider.toml
+# 覆盖：VELOX_PROVIDER__<SECTION>__<FIELD> 环境变量（双下划线分层，见 velox-demo/README.md）
+
+[server]
+addr = "0.0.0.0:9000"
+
+[registry]
+endpoint = "http://127.0.0.1:8300"  # velox-registry
+service_name = "demo-provider"      # mesh 按此名称发现本服务
+advertise_host = "127.0.0.1"        # 必须 mesh 可达（host 网络模式下即本机）
+advertise_port = 9000
+heartbeat_interval_secs = 5         # 必须小于 registry 的 heartbeat_ttl_secs
+
+[config_center]
+endpoint = "http://127.0.0.1:8200"  # velox-config
+namespace = "demo"
+key = "greeting-template"
+refresh_interval_secs = 5

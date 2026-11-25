@@ -1,0 +1,13 @@
+# velox-mesh 开发默认配置（生产配置不入库，见开发规范第 5 节）
+
+[server]
+inbound_addr = "0.0.0.0:8100"    # 数据面：业务容器出口流量
+admin_addr   = "127.0.0.1:8101"  # 管理面：仅本机可访问
+
+[registry]
+endpoint = "http://127.0.0.1:8300"  # velox-registry 地址
+poll_secs = 5                       # 服务快照刷新周期
+
+[proxy]
+connect_timeout_secs = 3
+request_timeout_secs = 30

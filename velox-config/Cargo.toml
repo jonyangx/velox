@@ -1,0 +1,23 @@
+[package]
+name = "velox-config"
+description = "velox 配置中心：服务治理与系统配置的存储与分发"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+tower.workspace = true
