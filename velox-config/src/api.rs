@@ -48,7 +48,7 @@ async fn get_item(
     State(store): State<Arc<Store>>,
     Path((namespace, key)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
-    Ok(Json(store.get(&namespace, &key)?))
+    Ok(Json(store.get(&namespace, &key).await?))
 }
 
 async fn put_item(
@@ -80,7 +80,7 @@ async fn list_namespace(
     State(store): State<Arc<Store>>,
     Path(namespace): Path<String>,
 ) -> Result<Json<BTreeMap<String, Value>>, AppError> {
-    let items = store.list(&namespace).ok_or_else(|| {
+    let items = store.list(&namespace).await?.ok_or_else(|| {
         AppError(crate::store::StoreError::NotFound {
             namespace: namespace.clone(),
             key: "*".to_string(),
@@ -89,8 +89,8 @@ async fn list_namespace(
     Ok(Json(items))
 }
 
-async fn list_namespaces(State(store): State<Arc<Store>>) -> Json<Vec<String>> {
-    Json(store.list_namespaces())
+async fn list_namespaces(State(store): State<Arc<Store>>) -> Result<Json<Vec<String>>, AppError> {
+    Ok(Json(store.list_namespaces().await?))
 }
 
 #[cfg(test)]
@@ -102,7 +102,7 @@ mod tests {
 
     fn temp_store() -> Store {
         let dir = std::env::temp_dir().join(format!("velox-config-api-test-{}", Uuid::new_v4()));
-        Store::open(dir).unwrap()
+        Store::open(dir, std::time::Duration::from_secs(300)).unwrap()
     }
 
     async fn body_json(res: axum::response::Response) -> Value {

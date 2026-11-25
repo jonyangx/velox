@@ -5,4 +5,11 @@ addr = "0.0.0.0:8200"
 max_concurrent_requests = 10  # 单实例最大并发处理请求数，≥1
 
 [storage]
+# SQLite 库文件 velox-config.db（及 WAL/SHM 副文件）所在目录；
+# 首次启动会自动导入目录中的旧版 {namespace}.json 并改名 .json.migrated
 data_dir = "./data"
+
+[cache]
+# namespace 读缓存 TTL（秒）：写操作即时驱逐缓存（读己之写不受影响）；
+# 0 = 禁用缓存
+ttl_secs = 300

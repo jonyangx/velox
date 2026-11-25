@@ -74,7 +74,7 @@ v0.1 轮询负载均衡 → v0.2 降级策略完善 / 最少连接 → v0.3 mTLS
 | 做 | 不做 |
 |----|------|
 | 配置的写入、读取、删除（namespace + key 二级结构） | 配置内容的校验规则（由消费方负责） |
-| 落盘持久化（`data/` 目录，重启不丢） | 服务发现（那是 registry 的事） |
+| 落盘持久化（SQLite 单文件 `data/velox-config.db`，重启不丢） | 服务发现（那是 registry 的事） |
 | 按 namespace 列举配置 | 加密存储（v0.3+ 规划） |
 | 变更监听（长轮询，v0.2 规划） | 配置渲染/模板 |
 
@@ -91,11 +91,13 @@ DELETE /api/v1/config/{namespace}/{key}          # 删除
 ### 存储模型
 
 - 逻辑结构：`namespace`（如 `velox-mesh`、`service-a`）→ `key`（如 `governance.toml`）→ JSON 值；
-- 物理存储：`data/{namespace}.json`，内存 HashMAP + 写穿落盘（v0.1 单实例即可）。
+- 物理存储：SQLite 单文件 `data/velox-config.db`，KV 表 `config(namespace, key, value, updated_at)`，复合主键聚簇（`WITHOUT ROWID`），库文件即唯一真相；
+- 读缓存：namespace 快照级 TTL 缓存（默认 300 秒，`cache.ttl_secs` 可配，0 表示禁用）；写操作即时驱逐缓存，读己之写不受影响；单实例部署下 TTL 只控制回源频率；
+- 启动迁移：目录中的旧版 `{namespace}.json` 在首次启动时一次性导入，并改名 `{namespace}.json.migrated`。
 
 ### 演进路线
 
-v0.1 文件存储 → v0.2 长轮询监听 + 版本号/etag → v0.3 加密项、审计日志 → v0.4+ 集群与备份。
+v0.1 SQLite 存储 + TTL 读缓存 → v0.2 长轮询监听 + 版本号/etag（`updated_at` 列已预留）→ v0.3 加密项、审计日志 → v0.4+ 集群与备份。
 
 ---
 

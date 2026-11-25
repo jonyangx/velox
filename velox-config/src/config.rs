@@ -7,6 +7,7 @@ use serde::Deserialize;
 pub struct Config {
     pub server: ServerConfig,
     pub storage: StorageConfig,
+    pub cache: CacheConfig,
 }
 
 const DEFAULT_MAX_CONCURRENT_REQUESTS: i64 = 10;
@@ -46,6 +47,18 @@ impl Default for StorageConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheConfig {
+    /// namespace 读缓存 TTL（秒）；0 = 禁用缓存
+    pub ttl_secs: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self { ttl_secs: 300 } // 默认 5 分钟
+    }
+}
+
 impl Config {
     /// `path` 为命令行传入的配置文件路径；缺省时全部使用默认值。
     pub fn load(path: Option<&str>) -> anyhow::Result<Self> {
@@ -69,6 +82,11 @@ impl Config {
                 anyhow::anyhow!(
                     "非法配置 VELOX_CONFIG__SERVER__MAX_CONCURRENT_REQUESTS：'{v}'（要求 ≥1 的整数）"
                 )
+            })?;
+        }
+        if let Some(v) = env_override("VELOX_CONFIG__CACHE__TTL_SECS") {
+            cfg.cache.ttl_secs = v.parse().map_err(|e| {
+                anyhow::anyhow!("解析环境变量 VELOX_CONFIG__CACHE__TTL_SECS '{v}' 失败：{e}")
             })?;
         }
         cfg.validate()?;
@@ -134,9 +152,8 @@ mod tests {
     #[test]
     fn default_when_key_missing() {
         with_env_cleaned(|| {
-            let path = write_toml(
-                "[server]\naddr = \"1.2.3.4:1\"\n\n[storage]\ndata_dir = \"/tmp/vx\"\n",
-            );
+            let path =
+                write_toml("[server]\naddr = \"1.2.3.4:1\"\n\n[storage]\ndata_dir = \"/tmp/vx\"\n");
             let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
             assert_eq!(cfg.server.max_concurrent_requests, 10);
             assert_eq!(cfg.server.addr, "1.2.3.4:1"); // 其余字段不受影响
@@ -147,9 +164,8 @@ mod tests {
     #[test]
     fn env_overrides_file() {
         with_env_cleaned(|| {
-            let path = write_toml(
-                "[server]\naddr = \"0.0.0.0:8200\"\nmax_concurrent_requests = 5\n",
-            );
+            let path =
+                write_toml("[server]\naddr = \"0.0.0.0:8200\"\nmax_concurrent_requests = 5\n");
             std::env::set_var(ENV_MAX, "3");
             let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
             assert_eq!(cfg.server.max_concurrent_requests, 3);
@@ -159,7 +175,7 @@ mod tests {
         });
     }
 
-    /// FR-5.3：空字符串 env 沿用 env_override 过滤语义，回落默认 10
+    /// FR-5.3：空字符串 env 沿用 `env_override` 过滤语义，回落默认 10
     #[test]
     fn env_empty_falls_back() {
         with_env_cleaned(|| {
@@ -177,7 +193,9 @@ mod tests {
                 let path = write_toml(&format!(
                     "[server]\naddr = \"0.0.0.0:8200\"\nmax_concurrent_requests = {v}\n"
                 ));
-                let err = Config::load(Some(path.to_str().unwrap())).unwrap_err().to_string();
+                let err = Config::load(Some(path.to_str().unwrap()))
+                    .unwrap_err()
+                    .to_string();
                 assert!(err.contains("max_concurrent_requests"), "实际：{err}");
                 assert!(err.contains(v), "实际：{err}");
             }
@@ -199,7 +217,9 @@ mod tests {
                 let path = write_toml(&format!(
                     "[server]\naddr = \"0.0.0.0:8200\"\nmax_concurrent_requests = {v}\n"
                 ));
-                let err = Config::load(Some(path.to_str().unwrap())).unwrap_err().to_string();
+                let err = Config::load(Some(path.to_str().unwrap()))
+                    .unwrap_err()
+                    .to_string();
                 assert!(err.contains("max_concurrent_requests"), "实际：{err}");
                 assert!(err.contains(v.trim_matches('"')), "实际：{err}");
             }
@@ -223,7 +243,10 @@ mod tests {
                     "[server]\naddr = \"0.0.0.0:8200\"\nmax_concurrent_requests = {v}\n"
                 ));
                 let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
-                assert_eq!(cfg.server.max_concurrent_requests, v.parse::<i64>().unwrap());
+                assert_eq!(
+                    cfg.server.max_concurrent_requests,
+                    v.parse::<i64>().unwrap()
+                );
             }
         });
     }
