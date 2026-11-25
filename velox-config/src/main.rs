@@ -6,6 +6,7 @@
 mod api;
 mod config;
 mod error;
+mod limit;
 mod store;
 
 use std::net::SocketAddr;
@@ -35,7 +36,7 @@ async fn run() -> anyhow::Result<()> {
 
     let store = Arc::new(Store::open(&cfg.storage.data_dir)?);
 
-    let app = api::router(store);
+    let app = api::router(store, cfg.max_concurrent_requests());
     let addr: SocketAddr = cfg
         .server
         .addr
@@ -46,6 +47,7 @@ async fn run() -> anyhow::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         addr = %addr,
         data_dir = %cfg.storage.data_dir,
+        max_concurrent_requests = cfg.max_concurrent_requests(), // NFR-2 / AC-5、AC-7
         "velox-config started"
     );
 

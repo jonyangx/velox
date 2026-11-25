@@ -2,6 +2,7 @@
 
 [server]
 addr = "0.0.0.0:8200"
+max_concurrent_requests = 10  # 单实例最大并发处理请求数，≥1
 
 [storage]
 data_dir = "./data"

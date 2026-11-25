@@ -41,7 +41,12 @@ curl localhost:8200/api/v1/config/velox-mesh/governance
 | 项 | 默认值 | 环境变量覆盖 |
 |----|--------|--------------|
 | `server.addr` | `0.0.0.0:8200` | `VELOX_CONFIG__SERVER__ADDR` |
+| `server.max_concurrent_requests` | `10` | `VELOX_CONFIG__SERVER__MAX_CONCURRENT_REQUESTS` |
 | `storage.data_dir` | `./data` | `VELOX_CONFIG__STORAGE__DATA_DIR` |
+
+`server.max_concurrent_requests` 为单实例进程级最大并发处理请求数（≥1，非法值启动失败）。
+默认 10 对高并发部署是行为收紧：超限请求立即收到 429（`code=too_many_requests`，附带 `Retry-After: 1`）；
+按峰值在途请求数调大即可，`/healthz` 不受限流影响。
 
 ## 测试
 
