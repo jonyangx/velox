@@ -93,3 +93,84 @@ async fn list_namespaces(State(store): State<Arc<Store>>) -> Json<Vec<String>> {
     Json(store.list_namespaces())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{Request as HttpRequest, StatusCode};
+    use tower::ServiceExt; // oneshot
+    use uuid::Uuid;
+
+    fn temp_store() -> Store {
+        let dir = std::env::temp_dir().join(format!("velox-config-api-test-{}", Uuid::new_v4()));
+        Store::open(dir).unwrap()
+    }
+
+    async fn body_json(res: axum::response::Response) -> Value {
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// 6.3 生产装配冒烟：正常 GET/PUT、healthz 豁免、未匹配路径 404（不经过限流层）。
+    #[tokio::test]
+    async fn smoke_router_assembly() {
+        let store = Arc::new(temp_store());
+        let app = router(store, 2);
+
+        // healthz：200（豁免限流，结构保证）
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/healthz")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // PUT 业务路由：200
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri("/api/v1/config/ns-a/k1")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{\"v\":1}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // GET 业务路由：200
+        let res = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/v1/config/ns-a/k1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["v"], 1);
+
+        // 未匹配路径：404 正常返回，不占名额
+        let res = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/nope")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+}
