@@ -1312,6 +1312,10 @@ fn handle_fixture_conn(
     report: &TestReportSink,
 ) {
     use std::io::{Read as _, Write as _};
+    // BUG-1①：macOS/BSD 上 accept() 返回的 stream 继承 listener 的 O_NONBLOCK，
+    // 高并发调度下 read 可能立刻返回 WouldBlock，空连接被静默关闭导致客户端空读；
+    // 先还原阻塞模式，使下方 5s 读超时真正生效（stop 轮询仍发生在 listener 上，语义不变）。
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut buf = [0u8; 2048];
     let n = match stream.read(&mut buf) {
@@ -1379,31 +1383,74 @@ fn handle_fixture_conn(
     }
 }
 
+/// 夹具子进程 RAII 守卫（BUG-1②）：包装父端 `std::process::Child`，
+/// 任何退出路径（含断言失败/panic 提前返回）都保证 kill + wait 回收，
+/// 不遗留 `fixture_child` 孤儿进程。
+struct ChildGuard {
+    inner: Option<std::process::Child>,
+}
+
+impl ChildGuard {
+    fn spawn(cmd: &mut std::process::Command) -> Self {
+        Self {
+            inner: Some(cmd.spawn().expect("启动夹具子进程")),
+        }
+    }
+
+    fn as_child(&mut self) -> &mut std::process::Child {
+        self.inner.as_mut().expect("夹具子进程句柄")
+    }
+
+    /// 正常路径：取回子进程并阻塞等待退出（消费守卫，此后 Drop 不再重复回收）。
+    fn wait(mut self) -> std::process::ExitStatus {
+        self.inner
+            .take()
+            .expect("夹具子进程句柄")
+            .wait()
+            .expect("等待子进程")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.inner.take() {
+            match child.try_wait() {
+                Ok(Some(_)) => {} // 已退出，无需处理
+                _ => {
+                    // 仍在运行或状态未知：kill 后 wait 回收，杜绝孤儿/僵尸进程
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+}
+
 /// 父驱动：自举子进程（同一测试可执行文件），8 并发客户端 × ≥64 请求，
 /// ≥4 次真实轮转，marker 前后窗可查，stop 后子进程正常退出（§6.2；默认执行）。
 #[test]
 fn live_rotation_concurrent() {
     let dir = TempDir::new("live");
     let exe = std::env::current_exe().expect("current_exe");
-    let mut child = std::process::Command::new(exe)
-        .args([
-            "--exact",
-            "tests::fixture_child",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env("VELOX_LOG_FIXTURE", "1")
-        .env("VELOX_LOG_FIXTURE_DIR", dir.path())
-        .env("VELOX_LOG_FIXTURE_MAX", "1024")
-        .env_remove("RUST_LOG")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("启动夹具子进程");
+    let mut child = ChildGuard::spawn(
+        std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "tests::fixture_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("VELOX_LOG_FIXTURE", "1")
+            .env("VELOX_LOG_FIXTURE_DIR", dir.path())
+            .env("VELOX_LOG_FIXTURE_MAX", "1024")
+            .env_remove("RUST_LOG")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    );
 
     // 父端 drain stdout/stderr（有界内存，不落磁盘全量副本）
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
+    let stdout = child.as_child().stdout.take().expect("stdout piped");
+    let stderr = child.as_child().stderr.take().expect("stderr piped");
     // stderr 持续排水（防管道堵死；内容仅诊断用，读取后丢弃）
     let stderr_drain = std::thread::spawn(move || {
         let mut reader = std::io::BufReader::new(stderr);
@@ -1576,7 +1623,7 @@ fn live_rotation_concurrent() {
     assert!(resp.starts_with("HTTP/1.1 200"));
 
     // 子进程正常退出（exit 0）
-    let status = child.wait().expect("等待子进程");
+    let status = child.wait();
     assert!(status.success(), "夹具子进程应 exit 0（实际 {status}）");
     let _ = stderr_drain.join();
 
