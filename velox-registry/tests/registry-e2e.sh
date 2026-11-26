@@ -52,6 +52,8 @@ wait_healthz() { # $1 url $2 超时秒
 
 start_registry() { # $1 数据目录 $2 TTL秒 $3 flush秒；回显 pid
   local data="$1" ttl="$2" flush="$3" log="$ISO_ROOT/registry-$4.log"
+  # BUG-1 修复：显式注入监听地址（隔离端口 18300，不与用户环境 8300 冲突）
+  VELOX_REGISTRY__SERVER__ADDR="127.0.0.1:$REG_PORT" \
   VELOX_REGISTRY__REGISTRY__HEARTBEAT_TTL_SECS="$ttl" \
   VELOX_REGISTRY__REGISTRY__SWEEP_INTERVAL_SECS=1 \
   VELOX_REGISTRY__PERSISTENCE__ENABLED=true \
@@ -63,6 +65,8 @@ start_registry() { # $1 数据目录 $2 TTL秒 $3 flush秒；回显 pid
 
 start_config() { # $1 数据目录 $2 日志名；回显 pid
   local data="$1" log="$ISO_ROOT/$2.log"
+  # BUG-1 修复：显式注入监听地址（隔离端口 18200）
+  VELOX_CONFIG__SERVER__ADDR="127.0.0.1:$CFG_PORT" \
   VELOX_CONFIG__STORAGE__DATA_DIR="$data" nohup "$CFG_BIN" >>"$log" 2>&1 &
   echo $!
 }
@@ -208,7 +212,8 @@ STEP="D"
 info "── 场景 D：与 velox-config 同 cwd 隔离（TC-37b，config 零修改）──"
 D_CWD="$ISO_ROOT/d-cwd"
 mkdir -p "$D_CWD"
-( cd "$D_CWD" && VELOX_REGISTRY__PERSISTENCE__DATA_DIR="./data" \
+( cd "$D_CWD" && VELOX_REGISTRY__SERVER__ADDR="127.0.0.1:$REG_PORT" \
+  VELOX_REGISTRY__PERSISTENCE__DATA_DIR="./data" \
   nohup "$REG_BIN" >>"$ISO_ROOT/d-registry.log" 2>&1 & echo $! >"$ISO_ROOT/d-reg.pid" )
 REG_PID=$(cat "$ISO_ROOT/d-reg.pid")
 PIDS="$REG_PID"
@@ -219,7 +224,8 @@ curl -fsS -X POST -H 'content-type: application/json' \
 REG_SNAP="$D_CWD/data/registry/registry-state.json"
 [[ -f "$REG_SNAP" ]] || die "D：快照未落在 ./data/registry/（G2-5 布局）"
 
-( cd "$D_CWD" && nohup "$CFG_BIN" >>"$ISO_ROOT/d-config.log" 2>&1 & echo $! >"$ISO_ROOT/d-cfg.pid" )
+( cd "$D_CWD" && VELOX_CONFIG__SERVER__ADDR="127.0.0.1:$CFG_PORT" \
+  nohup "$CFG_BIN" >>"$ISO_ROOT/d-config.log" 2>&1 & echo $! >"$ISO_ROOT/d-cfg.pid" )
 CFG_PID=$(cat "$ISO_ROOT/d-cfg.pid")
 PIDS="$REG_PID $CFG_PID"
 D_DEADLINE=$((SECONDS + 15))
@@ -245,8 +251,10 @@ curl -fsS -X PUT -H 'content-type: application/json' -d '{"fake":true}' \
 # 双双重启，数据互不覆盖
 kill -INT "$REG_PID" 2>/dev/null || true; wait_exit "$REG_PID" 5 || kill -9 "$REG_PID" 2>/dev/null || true
 kill -INT "$CFG_PID" 2>/dev/null || true; wait_exit "$CFG_PID" 5 || kill -9 "$CFG_PID" 2>/dev/null || true
-( cd "$D_CWD" && nohup "$REG_BIN" >>"$ISO_ROOT/d-registry.log" 2>&1 & echo $! >"$ISO_ROOT/d-reg.pid" )
-( cd "$D_CWD" && nohup "$CFG_BIN" >>"$ISO_ROOT/d-config.log" 2>&1 & echo $! >"$ISO_ROOT/d-cfg.pid" )
+( cd "$D_CWD" && VELOX_REGISTRY__SERVER__ADDR="127.0.0.1:$REG_PORT" \
+  nohup "$REG_BIN" >>"$ISO_ROOT/d-registry.log" 2>&1 & echo $! >"$ISO_ROOT/d-reg.pid" )
+( cd "$D_CWD" && VELOX_CONFIG__SERVER__ADDR="127.0.0.1:$CFG_PORT" \
+  nohup "$CFG_BIN" >>"$ISO_ROOT/d-config.log" 2>&1 & echo $! >"$ISO_ROOT/d-cfg.pid" )
 REG_PID=$(cat "$ISO_ROOT/d-reg.pid"); CFG_PID=$(cat "$ISO_ROOT/d-cfg.pid")
 PIDS="$REG_PID $CFG_PID"
 wait_healthz "$REG_URL" 15 || die "D：registry 重启失败"

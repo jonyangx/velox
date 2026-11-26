@@ -203,64 +203,77 @@ mod tests {
     /// 默认全值（AC-5）：无配置文件 → enabled=true、./data、flush=5（v0.1 字段沿 v0.1 默认）
     #[test]
     fn persistence_defaults() {
-        let cfg = Config::load(None).unwrap();
-        assert!(cfg.persistence.enabled);
-        assert_eq!(cfg.persistence.data_dir, "./data");
-        assert_eq!(cfg.persistence.flush_interval_secs, 5);
-        assert_eq!(cfg.registry.heartbeat_ttl_secs, 30);
+        // 整体持锁（BUG-2）：Config::load 始终读进程 env，
+        // 未持锁读取会与改 env 的并行用例跨污染（见 04-test-report.md §5 BUG-2）
+        with_env_cleaned(|| {
+            let cfg = Config::load(None).unwrap();
+            assert!(cfg.persistence.enabled);
+            assert_eq!(cfg.persistence.data_dir, "./data");
+            assert_eq!(cfg.persistence.flush_interval_secs, 5);
+            assert_eq!(cfg.registry.heartbeat_ttl_secs, 30);
+        });
     }
 
     /// 部分节（G2-3/TC-12）：仅 `enabled = false` 或仅 `data_dir` 时，
     /// 其余字段取容器 Default（true/./data/5），不用 serde 逐字段的 false/0 误代。
     #[test]
     fn partial_section_takes_container_defaults() {
-        let path = write_toml("[server]\naddr = \"0.0.0.0:8300\"\n\n[registry]\nheartbeat_ttl_secs = 30\nsweep_interval_secs = 5\n\n[persistence]\nenabled = false\n");
-        let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
-        assert!(!cfg.persistence.enabled);
-        assert_eq!(
-            cfg.persistence.data_dir, "./data",
-            "缺省字段取容器默认 ./data"
-        );
-        assert_eq!(
-            cfg.persistence.flush_interval_secs, 5,
-            "缺省字段取容器默认 5"
-        );
+        // 整体持锁（BUG-2）：Config::load 始终读进程 env，
+        // 未持锁读取会与改 env 的并行用例跨污染（见 04-test-report.md §5 BUG-2）
+        with_env_cleaned(|| {
+            let path = write_toml("[server]\naddr = \"0.0.0.0:8300\"\n\n[registry]\nheartbeat_ttl_secs = 30\nsweep_interval_secs = 5\n\n[persistence]\nenabled = false\n");
+            let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
+            assert!(!cfg.persistence.enabled);
+            assert_eq!(
+                cfg.persistence.data_dir, "./data",
+                "缺省字段取容器默认 ./data"
+            );
+            assert_eq!(
+                cfg.persistence.flush_interval_secs, 5,
+                "缺省字段取容器默认 5"
+            );
 
-        let path = write_toml("[persistence]\ndata_dir = \"/tmp/only-dir\"\n");
-        let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
-        assert!(cfg.persistence.enabled, "缺省 enabled 取容器默认 true");
-        assert_eq!(cfg.persistence.data_dir, "/tmp/only-dir");
-        assert_eq!(cfg.persistence.flush_interval_secs, 5);
+            let path = write_toml("[persistence]\ndata_dir = \"/tmp/only-dir\"\n");
+            let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
+            assert!(cfg.persistence.enabled, "缺省 enabled 取容器默认 true");
+            assert_eq!(cfg.persistence.data_dir, "/tmp/only-dir");
+            assert_eq!(cfg.persistence.flush_interval_secs, 5);
+        });
     }
 
     /// 规则 1：flush=0 拒绝，**enabled=false 同样拒绝**（G2-3：字段本身非法与启用无关）
     #[test]
     fn flush_zero_rejected_even_when_disabled() {
-        for enabled in [true, false] {
-            let path = write_toml(&format!(
-                "[persistence]\nenabled = {enabled}\nflush_interval_secs = 0\n"
-            ));
-            let err = Config::load(Some(path.to_str().unwrap()))
-                .unwrap_err()
-                .to_string();
-            assert!(
-                err.contains("persistence.flush_interval_secs"),
-                "实际：{err}"
-            );
-            assert!(err.contains('0'), "实际：{err}");
-        }
+        // 整体持锁（BUG-2）：Config::load 始终读进程 env，
+        // 未持锁读取会与改 env 的并行用例跨污染（见 04-test-report.md §5 BUG-2）
+        with_env_cleaned(|| {
+            for enabled in [true, false] {
+                let path = write_toml(&format!(
+                    "[persistence]\nenabled = {enabled}\nflush_interval_secs = 0\n"
+                ));
+                let err = Config::load(Some(path.to_str().unwrap()))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    err.contains("persistence.flush_interval_secs"),
+                    "实际：{err}"
+                );
+                assert!(err.contains('0'), "实际：{err}");
+            }
+        });
     }
 
     /// 规则 2：data_dir 为空拒绝（无论 enabled；TOML 与 env 两途径）
     #[test]
     fn empty_data_dir_rejected_even_when_disabled() {
-        let path = write_toml("[persistence]\nenabled = false\ndata_dir = \"\"\n");
-        let err = Config::load(Some(path.to_str().unwrap()))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("persistence.data_dir"), "实际：{err}");
-
+        // 整体持锁（BUG-2）：load 读进程 env，须与改 env 的用例串行
         with_env_cleaned(|| {
+            let path = write_toml("[persistence]\nenabled = false\ndata_dir = \"\"\n");
+            let err = Config::load(Some(path.to_str().unwrap()))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("persistence.data_dir"), "实际：{err}");
+
             std::env::set_var(ENV_ENABLED, "false");
             std::env::set_var(ENV_DATA_DIR, "");
             let err = Config::load(None).unwrap_err().to_string();
@@ -272,43 +285,51 @@ mod tests {
     /// 默认 5 < 30 合法；30 >= 30 拒绝；enabled=false + TTL1 + flush5 合法（规则 4）。
     #[test]
     fn cross_field_flush_ge_ttl_only_when_enabled() {
-        // enabled=true + flush=30 >= ttl=30 → 拒绝（含两个配置项名与实际值）
-        let path = write_toml("[registry]\nheartbeat_ttl_secs = 30\nsweep_interval_secs = 5\n\n[persistence]\nenabled = true\nflush_interval_secs = 30\n");
-        let err = Config::load(Some(path.to_str().unwrap()))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("persistence.flush_interval_secs"),
-            "实际：{err}"
-        );
-        assert!(err.contains("heartbeat_ttl_secs"), "实际：{err}");
+        // 整体持锁（BUG-2）：Config::load 始终读进程 env，
+        // 未持锁读取会与改 env 的并行用例跨污染（见 04-test-report.md §5 BUG-2）
+        with_env_cleaned(|| {
+            // enabled=true + flush=30 >= ttl=30 → 拒绝（含两个配置项名与实际值）
+            let path = write_toml("[registry]\nheartbeat_ttl_secs = 30\nsweep_interval_secs = 5\n\n[persistence]\nenabled = true\nflush_interval_secs = 30\n");
+            let err = Config::load(Some(path.to_str().unwrap()))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("persistence.flush_interval_secs"),
+                "实际：{err}"
+            );
+            assert!(err.contains("heartbeat_ttl_secs"), "实际：{err}");
 
-        // enabled=true + flush=5 < ttl=30（默认）→ 合法
-        let path = write_toml("[persistence]\nenabled = true\n");
-        assert!(Config::load(Some(path.to_str().unwrap())).is_ok());
+            // enabled=true + flush=5 < ttl=30（默认）→ 合法
+            let path = write_toml("[persistence]\nenabled = true\n");
+            assert!(Config::load(Some(path.to_str().unwrap())).is_ok());
 
-        // enabled=false + TTL1 + 默认 flush5 → 合法（禁用态不执行规则 3）
-        let path = write_toml("[registry]\nheartbeat_ttl_secs = 1\nsweep_interval_secs = 1\n\n[persistence]\nenabled = false\n");
-        let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
-        assert!(!cfg.persistence.enabled);
-        assert_eq!(cfg.persistence.flush_interval_secs, 5);
+            // enabled=false + TTL1 + 默认 flush5 → 合法（禁用态不执行规则 3）
+            let path = write_toml("[registry]\nheartbeat_ttl_secs = 1\nsweep_interval_secs = 1\n\n[persistence]\nenabled = false\n");
+            let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
+            assert!(!cfg.persistence.enabled);
+            assert_eq!(cfg.persistence.flush_interval_secs, 5);
+        });
     }
 
     /// 解析期拒绝（无论 enabled）：TOML 类型错误
     #[test]
     fn toml_type_errors_rejected() {
-        for enabled in [true, false] {
-            let path = write_toml(&format!(
-                "[persistence]\nenabled = {enabled}\nflush_interval_secs = -1\n"
-            ));
-            let err = Config::load(Some(path.to_str().unwrap()))
-                .unwrap_err()
-                .to_string();
-            assert!(
-                err.contains("解析配置文件"),
-                "TOML 类型错须解析期拒绝，实际：{err}"
-            );
-        }
+        // 整体持锁（BUG-2）：Config::load 始终读进程 env，
+        // 未持锁读取会与改 env 的并行用例跨污染（见 04-test-report.md §5 BUG-2）
+        with_env_cleaned(|| {
+            for enabled in [true, false] {
+                let path = write_toml(&format!(
+                    "[persistence]\nenabled = {enabled}\nflush_interval_secs = -1\n"
+                ));
+                let err = Config::load(Some(path.to_str().unwrap()))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    err.contains("解析配置文件"),
+                    "TOML 类型错须解析期拒绝，实际：{err}"
+                );
+            }
+        });
     }
 
     /// env 覆盖合法值生效（优先于 TOML）+ ENABLED 仅接受 true/false
@@ -370,9 +391,13 @@ mod tests {
     /// 未提供配置文件时除新增默认外行为与 v0.1 一致（FR-11）：v0.1 字段默认值不变
     #[test]
     fn v01_fields_unchanged_by_default() {
-        let cfg = Config::load(None).unwrap();
-        assert_eq!(cfg.server.addr, "0.0.0.0:8300");
-        assert_eq!(cfg.registry.heartbeat_ttl_secs, 30);
-        assert_eq!(cfg.registry.sweep_interval_secs, 5);
+        // 整体持锁（BUG-2）：Config::load 始终读进程 env，
+        // 未持锁读取会与改 env 的并行用例跨污染（见 04-test-report.md §5 BUG-2）
+        with_env_cleaned(|| {
+            let cfg = Config::load(None).unwrap();
+            assert_eq!(cfg.server.addr, "0.0.0.0:8300");
+            assert_eq!(cfg.registry.heartbeat_ttl_secs, 30);
+            assert_eq!(cfg.registry.sweep_interval_secs, 5);
+        });
     }
 }
