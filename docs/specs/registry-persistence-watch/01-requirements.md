@@ -1,7 +1,7 @@
 # 需求分析：velox-registry v0.2 —— 状态持久化 + watch 推送（registry 侧）
 
 > feature slug: `registry-persistence-watch`
-> 状态：待评审（含 9 个待确认问题，见第 7 节）
+> 状态：定向修订待 GATE1 复审（第 1 轮，仅 G2-4 与 G2-5 的需求归属修订；含 9 个待确认问题，见第 7 节）
 > 上游依据：`velox-mono/docs/subsystems.md`「velox-registry —— 服务注册中心」演进路线「v0.1 内存注册表 + TTL 剔除 → v0.2 状态持久化、watch 推送」；`velox-mono/docs/architecture.md` §3.3（mesh→registry 为 pull，push 模式留待 v0.3+）
 
 ## 1. 背景与目标
@@ -32,7 +32,9 @@ velox-registry v0.1（提交 `5299f66`）是**纯内存**注册表：`velox-regi
 
 - 作为 registry 运维者，期望心跳续约（高频操作：默认每实例每 5s 一次，证据 `velox-demo/provider/src/config.rs` `heartbeat_interval_secs = 5`）**不**产生逐次全量文件写穿——按 1000 实例估算即 ≥ 200 次全量快照写/秒，单机 IO 不可接受。
 - 期望策略（建议默认，AA 可定案，见 Q2）：心跳只更新内存并置脏标记，由后台任务按可配置周期（建议默认与 `sweep_interval_secs` 同量级，如 5s）将脏快照合并落盘。
-- 语义代价（需在实现与文档中明示）：registry 崩溃时最近一个刷盘周期内的心跳时间戳丢失，恢复后这些实例的心跳时间**偏旧**（最多偏旧一个刷盘周期）。只要刷盘周期显著小于 `heartbeat_ttl_secs`（默认 30s），健康实例恢复后不会被误判超时；恢复时已超 TTL 的实例按 FR-4 丢弃。
+- 语义代价（需在实现与文档中明示）：在**无 IO 故障、无调度严重延迟、刷盘按期完成**的前提下，registry 崩溃可能丢失最近一个刷盘周期内尚未落盘的心跳新鲜度；存在 IO 故障或调度严重延迟时，不能承诺该窗口为一个周期的硬上界。
+- 恢复窗口：快照有效且实例存在于快照时，实例能否恢复取决于**恢复时 `now − 已持久化 heartbeat ≤ 本次启动的 heartbeat_ttl_secs`**。`flush_interval_secs < heartbeat_ttl_secs` 只能减小正常刷盘时的新鲜度丢失窗口，不能保证恢复；即使真实最后心跳未超 TTL，也可能因落盘心跳偏旧而按 FR-4 被丢弃。FR-4 的严格 `age > TTL` 丢弃规则保持不变，不引入恢复宽限期。
+- 判定示例（G2-4 反例）：TTL=30s、刷盘周期=5s；t20 心跳已落盘，t25 刷盘先于该次心跳，文件仍记 t20，随后 t25 心跳仅更新内存；t29 崩溃、t51 恢复时，真实心跳年龄为 26s，已持久化心跳年龄为 31s，实例必须丢弃。因此 AC-1/AC-2 的成功恢复验收须满足上述已持久化心跳窗口。
 
 ### FR-3 重启后恢复注册表状态，`instance_id` 保持不变
 
@@ -142,8 +144,8 @@ velox-registry v0.1（提交 `5299f66`）是**纯内存**注册表：`velox-regi
 
 | # | 对应 FR | 验收标准（Given / When / Then） |
 |---|---------|--------------------------------|
-| AC-1 | FR-1 | Given registry 已注册实例 A 于服务 svc（结构变更落盘启用）；When kill -9 registry 进程后原配置重启；Then 启动日志显示恢复了 svc 下实例 A，且 `GET .../instances` 返回 A，`id`/`address`/`port`/`metadata` 与重启前一致 |
-| AC-2 | FR-3 | Given AC-1 场景恢复完成；When 原实例以同一 `instance_id` 发 `PUT .../heartbeat`；Then 返回 200 `{"ok":true}`，无 404 |
+| AC-1 | FR-1 | Given registry 已注册实例 A 于服务 svc，持久化启用且 A 已成功写入有效快照，并确保恢复时 `now − A 的已持久化 heartbeat ≤ 本次启动的 heartbeat_ttl_secs`（FR-2 恢复窗口）；When kill -9 registry 进程后原配置重启；Then 启动日志显示恢复了 svc 下实例 A，且在 A 再次超时被剔除前 `GET .../instances` 返回 A，`id`/`address`/`port`/`metadata` 与重启前一致；不以真实最后心跳未超 TTL 或刷盘周期小于 TTL 代替恢复窗口前提 |
+| AC-2 | FR-3 | Given AC-1 场景恢复完成，A 在有效快照中且恢复时 `now − A 的已持久化 heartbeat ≤ 本次启动的 heartbeat_ttl_secs`；When 原实例在 A 再次超时被剔除前，以同一 `instance_id` 发 `PUT .../heartbeat`；Then 返回 200 `{"ok":true}`，无 404；若恢复时已持久化心跳超 TTL，则按 FR-4 丢弃，不适用本条成功续约断言 |
 | AC-3 | FR-2 | Given 启用刷盘周期 T=5s、TTL=30s；When 实例每 5s 心跳持续运行；Then data 目录文件修改时间随刷盘周期更新，且心跳请求延迟不随落盘同步产生（心跳响应不等待本轮刷盘） |
 | AC-4 | FR-4 | Given 落盘文件中实例 B 的心跳时间戳距 now 超过 TTL；When registry 重启恢复；Then B 不出现在任何实例列表中，日志输出丢弃计数（WARN） |
 | AC-5 | FR-5 | Given 不提供配置文件启动；Then `[persistence]` 取默认值（enabled=true、`./data`）且启动成功；Given `enabled=false`；Then 不创建/不写落盘文件，行为与 v0.1 一致；Given `flush_interval_secs = 0`；Then 启动失败并含配置项名与实际值 |
@@ -188,7 +190,7 @@ velox-registry v0.1（提交 `5299f66`）是**纯内存**注册表：`velox-regi
 - **Q1 持久化默认开启还是关闭？**
   建议默认**开启**（`enabled = true`）：目标场景（单机重启恢复）无需额外配置即获益；关闭仅作为排障逃生门。风险：v0.1 用户升级后多出 data 目录写入行为——属无害增量，README 说明即可。
 - **Q2 心跳落盘策略：逐次写穿 vs 脏标记周期刷盘？**
-  建议默认**脏标记 + 周期刷盘**（FR-2）：1000 实例 × 每 5s 心跳 = 200 次/秒全量快照写穿不可接受；周期刷盘（默认 5s，可配 `flush_interval_secs`）把丢数据窗口限制在一个周期内，且该窗口内丢失的仅是心跳时间戳的新鲜度，不丢实例存在性（注册/注销仍是即时写穿）。备选「逐次写穿」仅在实例规模 ≤ 100 的保守场景可辩护，不做默认。
+  建议默认**脏标记 + 周期刷盘**（FR-2）：1000 实例 × 每 5s 心跳 = 200 次/秒全量快照写穿不可接受；周期刷盘（默认 5s，可配 `flush_interval_secs`）在无 IO 故障、无调度严重延迟且刷盘按期完成时，可能丢失最近一个周期内尚未落盘的心跳新鲜度（FR-2）。注册/注销仍是即时写穿，但已持久化实例恢复时仍须满足 `now − 已持久化 heartbeat ≤ 本次 TTL`，否则按 FR-4 丢弃，不能承诺真实最后心跳未超 TTL 就一定恢复。备选「逐次写穿」仅在实例规模 ≤ 100 的保守场景可辩护，不做默认。
 - **Q3 注册/注销落盘失败时的 HTTP 语义？**
   建议默认**返回 5xx**（与 velox-config 写穿语义一致，证据 `velox-config/src/store.rs` put 失败返回 Err）：保证「注册成功 ⇒ 已落盘」的强语义，调用方（provider）已有注册退避重试逻辑可自愈。代价：磁盘故障期间无法注册新实例（可接受，磁盘故障本需人介入）。剔除为后台任务，失败仅 ERROR 日志。心跳不直接落盘（FR-2），永不因落盘失败报错。
 - **Q4 watch 端点形态与粒度？**
@@ -196,7 +198,7 @@ velox-registry v0.1（提交 `5299f66`）是**纯内存**注册表：`velox-regi
 - **Q5 watch 超时默认值与上限？**
   建议默认 **30s**、上限 300s、非法值 400（FR-10）：与心跳 TTL 量级匹配，客户端断线重连成本低。
 - **Q6 data 目录默认路径与文件布局？**
-  建议默认 `data_dir = "./data"`、单文件 `registry-state.json`：与 velox-config 既有约定（`[storage] data_dir = "./data"`）对齐；同机同 cwd 共目录场景下两进程文件名不同、互不冲突（B-10 的「共享目录」仅指两个 registry 实例互踩，一个 registry + 一个 config 共目录无冲突）。备选独立 `./data-registry/` 目录，隔离更彻底但引入第二个约定。
+  建议保留默认 `data_dir = "./data"`（FR-5/AC-5 不变），由 registry 在该根目录下使用专属子目录，例如 `./data/registry/registry-state.json`；实际文件布局由 AA 定案，快照及临时文件均应置于隔离子目录内。纠正原依据「共目录文件名不同、互不冲突」：`velox-config/src/store.rs` 的 `Store::open` 非递归扫描 data_dir 顶层所有 `.json`，`valid_namespace` 接受 `registry-state`，且 registry 快照的顶层 JSON 对象可被 `NamespaceData = BTreeMap<String, Value>` 解析，因此顶层 `./data/registry-state.json` 会被 config 装载为 namespace；后续对该 namespace 的 put/delete 会经 `flush` 覆盖同一路径，破坏快照。专属子目录可避开现有非递归扫描；不修改 config 扫描实现。B-10 的双 registry 独占约束仍成立，但不能用它推导 registry 与 config 共用顶层文件目录无冲突。
 - **Q7 healthz 是否暴露持久化/watch 状态？**
   建议默认**不变**（FR-11 兼容优先），观测靠 NFR-4 日志；若评审认为需要，可另加 `GET /api/v1/registry/status`（非本期验收项）。
 - **Q8 architecture.md §7 演进路线表与 subsystems.md 不一致（前者 v0.2 行未列 registry 持久化/watch）？**

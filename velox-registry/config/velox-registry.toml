@@ -8,3 +8,13 @@ addr = "0.0.0.0:8300"
 heartbeat_ttl_secs = 30
 # 后台剔除任务的扫描周期
 sweep_interval_secs = 5
+
+# v0.2 状态持久化（FR-5）：注册/注销即时写穿，心跳按周期合并刷盘，
+# 重启恢复按绝对时间 TTL 过滤。快照文件为 <data_dir>/registry/registry-state.json。
+[persistence]
+# 是否启用落盘与恢复（默认开启；false = 与 v0.1 完全一致的排障逃生门）
+enabled = true
+# 落盘根目录（快照实际存放在其 registry/ 专属子目录，避开 velox-config 顶层扫描）
+data_dir = "./data"
+# 心跳脏快照刷盘周期（秒）；启用持久化时必须 < heartbeat_ttl_secs
+flush_interval_secs = 5

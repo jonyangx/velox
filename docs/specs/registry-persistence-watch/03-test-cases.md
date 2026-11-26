@@ -1,164 +1,181 @@
-# 测试用例：velox-registry v0.2 —— 状态持久化 + watch 推送（registry 侧）
+# 测试用例（v1 定稿）：velox-registry v0.2 状态持久化 + watch 推送（registry 侧）
 
-> feature slug: `registry-persistence-watch`
-> 输入：`01-requirements.md`（GATE1 PASS，AC-1…AC-14 已冻结）＋ 只读测试基建侦察（无 F-TA-P 笔记，本文档第 2 章为本次自行侦察结论）
-> 范围：仅 velox-registry（持久化重启恢复 / watch 长轮询 / v0.1 API 兼容回归）；mesh/config/demo 零改动
+> 状态：v1 定稿——已对齐 01-requirements.md 冻结 AC；GATE2 第1轮返工同步稿，设计覆盖不代表测试通过。
+> slug：`registry-persistence-watch`；基准分支 `develop`，HEAD `28c91140dd14a29d25dcbc270b2bb23aeb32b2f0`。本轮仅修订本文，不切分支、不提交、不运行功能测试。
+> 需求输入：SA 定向修订 FR-2/AC-1/AC-2/Q2/Q6，最新 `01-requirements-review.md` 为定向 GATE1 PASS；现行 `02-architecture-review.md` 仍为 GATE2 REWORK，全文 §7/8 为返工依据。
+> 架构读取版本：`02-architecture.md` SHA-256 `e51c5bb1effad7af7f90a12b91ebc4eb909c5097d7042ef7af314eecb158b5cd`（旧稿，AA 同波返工尚未落入该版本）。本文引用已定案部分；对 G2-1/2/3/5 的修订目标明确标出待 AA 对齐，不能据此宣布架构返工完成。
+> 仅 registry 及文档；mesh/config/demo 代码和脚本零修改；新增测试/脚本仅在 registry 内。保留原 TC-01…41 编号，细分子场景，不撤销任何 AC。
 
 ## 1. 测试范围与分层策略（单测/集成/e2e 边界）
 
-| 层 | 位置 | 覆盖内容 |
-|---|------|---------|
-| 单元测试 | `velox-registry/src/*` 内嵌 `#[cfg(test)] mod tests` | 纯逻辑：快照序列化 roundtrip、损坏文件判定、配置校验（`flush_interval_secs=0` fail fast）、TTL 判定纯函数、版本号递增规则 |
-| 集成测试 | `velox-registry/tests/`（新建，NFR-6 要求） | axum `Router` + `tower::ServiceExt::oneshot` 驱动 HTTP 层 + 真实持久化 Store + 临时目录：重启恢复、watch 挂起/唤醒/超时、落盘失败注入、并发竞争、v0.1 兼容回归 |
-| e2e | `velox-demo/scripts/acceptance.sh` 扩展 + 复用 `scripts/common.sh` | 真实进程生命周期：kill -9 重启恢复（AC-1/2）、SIGINT 优雅关停断开 watch（AC-9）、刷盘 mtime 观测（AC-3）、mesh 零改动拉取（AC-12）、启动日志字段 grep（NFR-4） |
-| 手工/代码审查 | — | AC-14 rename 原子写审查（配合 TC-18 tmp 残留模拟）、AC-13 压测对比（自建轻量压测，见 RQ-2）、B-9/B-10 文档声明项 |
+| 层 | 执行位置与入口 | 覆盖与边界 |
+|---|---|---|
+| 单测 | registry 内嵌测试，`cargo test -p velox-registry` | 配置默认/校验、固定 epoch 恢复过滤、DTO、参数默认值、版本/dirty 不变量 |
+| 集成 | 拟新增 `velox-registry/tests/{persistence,watch,compat}.rs`，同一 cargo 入口 | Router+oneshot、真实临时存储、可注入 shutdown、失败/并发；当前 bin crate 私有模块不能直接从 tests/ import，AA 须明确 lib 导出或等效测试入口，DA 随实现交付；不能声称现已可编译 |
+| e2e | 拟新增 `velox-registry/tests/registry-e2e.sh`；入口 `bash velox-registry/tests/registry-e2e.sh`（待实现） | registry 真进程 SIGKILL/restart、SIGINT/exit、写入中途崩溃、同 cwd 与原 config 进程隔离；脚本、夹具均限 registry 内 |
+| 既有跨服务回归 | `bash velox-demo/scripts/acceptance.sh`（只运行，完全不改） | 原 mesh 拉取、consumer/provider 转发、LB、TTL 剔除等已有断言。该脚本不证明新增 registry 崩溃恢复/原子写 |
+| 性能专项 | 拟新增 `velox-registry/tests/registry-perf.sh`（待实现） | 真 v0.1 对比 v0.2，TC-38 规定负载与判据；不要求每次 CI 压测，但验收不可省略 |
+| 审查 | registry 代码及 README/上游文档 | 领域锁内无 IO/await、flush 锁覆盖、原子替换、边界声明；审查不能代替进程证据 |
 
-分层边界约定：
-- **涉及真实进程信号（kill -9 / SIGINT）与跨进程行为（provider 心跳续命、mesh 拉取）的用例归 e2e**；纯 router 级行为（挂起、唤醒、参数校验、落盘失败）归集成层，可在毫秒级完成、不依赖端口。
-- **watch 挂起/优雅关停的集成可测性依赖实现形态**：若 shutdown 通道与刷盘任务可从测试侧注入（`with_graceful_shutdown` 接收任意 future），TC-21/24/26/30 可在集成层完成；否则降级为 e2e（用例中已标注双轨）。
-- 每条 AC 至少 1 条 P0 或 P1 用例（见第 4 章矩阵，无缺口）。
+G2 逐项落实：G2-1→TC-05b/16/17/33/34（失败后无新 mutation 重试、四路同锁、成功不清掉并发脏状态）；G2-2→TC-22/23/40（缺省与显式0分离、先校验参数、统一拒绝）；G2-3→TC-10/12/37；G2-4→TC-01/02/03/07/08/09（落盘心跳窗口、严格边界及反例）；G2-5→TC-11/14/18/37b（默认根不变、子目录与 config 隔离）；G2-6→TC-38/RQ-2（真基线、原阈值）；G2-7→本稿全部41TC、矩阵、时间/入口/档位及越界计划撤回。AA 尚未完成项由 GATE2 复审裁决，不由 TA 代改架构。
 
 ## 2. 测试环境与基建（框架、命令、夹具、e2e 手段）
 
-> 本章为本次自行完成的只读侦察结论（F-TA-P 被跳过，无 PREPARE 笔记）。
+### 2.1 只读侦察及执行命令
 
-**框架与既有测试组织**
-- 测试执行器：`cargo test`（workspace 统一）；单测为 `#[cfg(test)] mod tests` 内嵌 + `#[tokio::test]`；workspace 共 12 个源文件含内嵌测试（velox-config 4 / velox-registry 1 / mesh 1 / demo 与 consumer 其余）。
-- `velox-registry/tests/` **当前不存在**，需随本 feature 新建（需求 NFR-6、影响面表已列）。
-- HTTP 层测试样板：`velox-registry/src/api.rs` 内嵌测试用 `Router` + `tower::ServiceExt::oneshot`（无真实端口）；dev-dep `tower` 已在 `[workspace.dependencies]`，**无需新增依赖**。
-- 持久化测试样板（直接可复用）：`velox-config/src/store.rs` tests —— 临时目录 + `Uuid::new_v4()` 命名隔离、drop 后重新 open 断言 roundtrip（`persists_across_restart`）、损坏文件跳过语义同型用例可参照。
-- 时间敏感用例可用 `#[tokio::test(start_paused = true)]`（workspace tokio 已启用 time 能力，`main.rs` 在用）。
+已核对根 README、`scripts/README.md`、`scripts/test.sh`、registry README/Cargo.toml、已有 demo 验收脚本及 config Store 扫描代码。现状 registry 为 bin crate，无 lib target，tower 为 workspace dev-dependency，`velox-registry/tests/` 尚无现成测试入口。临时目录可沿用 config 测试的 UUID 隔离模式，但 config 的原子写不能复用为既有事实（现状为直接 write）。
 
-**构建/测试命令（CI 门槛）**
-- `scripts/test.sh`：fmt + `clippy --workspace --all-targets -- -D warnings` + build + test 全绿（完整门槛）。
-- `scripts/test.sh --unit`：只跑 `cargo test`；单 crate：`cargo test -p velox-registry`。
+后续执行命令（本轮均未运行）：
 
-**e2e / 集成验证手段**
-- `velox-demo/scripts/acceptance.sh`：host 模式（**docker-compose 为 Linux `network_mode: host` 专用，macOS 开发机不可用，e2e 一律走 host 脚本**），curl + jq 断言；固定端口 8100/8101/8200/8300/9000/9001/9100；已内置 kill -9 宕机剔除先例与 `wait_json_eq` 轮询断言工具，可直接复用其模式扩展「重启恢复」步骤。
-- `scripts/run.sh start/stop`：管理 core 三件套（registry(:8300)→config→mesh）；pid 在 `.run/`、日志在 `logs/<crate>.log`（日志断言 = grep 该文件，`RUST_LOG` 可调级别）。
-- 配置覆盖：env `VELOX_REGISTRY__<SECTION>__<FIELD>`（`config.rs` 既有机制），e2e 用 `VELOX_REGISTRY__PERSISTENCE__DATA_DIR=<临时绝对路径>` 隔离落盘，避免污染仓库树（对齐 acceptance.sh 对 velox-config data 的清理做法）。
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
+cargo test -p velox-registry
+cargo test --workspace
+bash velox-demo/scripts/acceptance.sh
+```
 
-**风险与局限（侦察结论）**
-1. **watch 挂起/关停类用例的集成可测性取决于实现是否暴露可注入 shutdown 通道**；不可注入则 TC-21/24/26/30 走 e2e SIGINT（curl 后台挂起）。
-2. **落盘失败注入**：`chmod 555` 只读目录在 root/部分 CI 环境会被绕过 → 优先集成层向 Store 传非法/只读路径注入；e2e 层标注环境依赖。
-3. **时间敏感断言**（刷盘 mtime、watch「1s 内唤醒」）受 CI 负载抖动影响，阈值需放宽容差（唤醒断言 ≤ 2s 记通过并注明）。
-4. **AC-14 崩溃注入窗口**（「写盘中途 kill」）无法精确命中写盘中间态 → 以 TC-18（tmp 残留模拟）+ 代码审查（rename 语义）组合覆盖，e2e kill 时序尝试为尽力而为。
-5. **AC-13 无压测基建**（无 criterion、无压测脚本、无 v0.1 基线留存）→ 需自建轻量压测，见 RQ-2。
-6. 测试隔离：集成测试临时目录用 `Uuid` 命名并 finally 清理；e2e 用独立 `VELOX_REGISTRY__PERSISTENCE__DATA_DIR`。
+`scripts/test.sh` 完整门槛为 fmt/clippy/build/workspace test，脚本 fmt 写作等价的 `cargo fmt --all -- --check`；`--unit` 实际执行 `cargo test --workspace`，不是仅 registry。registry 运行入口为绝对构建产物或 `cargo run -p velox-registry -- <config>`；指定 cwd/配置以免默认状态互相污染。`scripts/run.sh` 日志实际为 `logs/velox-registry.log`，PID 在 `.run/`；新 runner 将 stdout/stderr 捕获为外部临时目录 `<run-dir>/registry.log`，执行报告记录绝对位置、命令和退出码，不提交运行数据、日志、状态。
 
-## 3. 用例表（TC-x）
+已有 demo 脚本依赖 cargo/curl/jq，占用 8100/8101/8200/8300/9000/9001/9100，使用 TTL6/sweep2，默认 flush5 满足启用时跨项约束。运行时从外部设置独立 `VELOX_REGISTRY__PERSISTENCE__DATA_DIR`；原脚本会清理 `data/demo.json`，只在隔离运行环境且确认不覆盖既有数据时执行，不能新增修改 demo 脚本解决隔离问题。host 模式即可，无需 Docker。注意脚本的 provider SIGTERM 步骤容许 TTL 兜底，不把它当 registry SIGINT 优雅退出的证据。
 
-> 列说明：类型 = 单元/集成/e2e/审查；优先级 P0 冒烟级 / P1 核心 / P2 健壮性。前置中「临时目录」均指 Uuid 命名隔离目录。
+### 2.2 统一夹具与可判定时间策略
 
-### A 组：持久化落盘与重启恢复
+- **F-SNAPSHOT**：按旧 A §4.2/5.1 已定 DTO，`format_version:1`、`saved_at_epoch:u64`、`services:{svc:[{id:合法UUID,address,port:u16,metadata:字符串map,last_heartbeat_epoch:u64}]}`；合法文件不省必填字段。未知版本99、缺字段、类型错、截断、空文件分别作为坏夹具。比较内容语义，不要求 HashMap JSON 字节顺序稳定。
+- **F-PATH（AA 待定）**：需求默认根仍为 `./data`，本稿目标布局为 `<data_dir>/registry/registry-state.json`，tmp 同一隔离子目录 `registry-state.json.tmp`。旧 A 的顶层布局已被 G2-5 驳回；AA 最终文件布局落盘后统一替换夹具常量并复核本文，不能悄用顶层文件或改默认根。TC-37b以“专属子目录避开非递归扫描”为不变判据。
+- **F-RESTORE**：固定 `now_epoch=N` 注入恢复纯逻辑；age=TTL 应保留，age=TTL+1 丢弃。相等边界在 HTTP 往返前即可再次过期，故边界不靠真实 sleep/HTTP 证明。真实恢复使用宽裕窗口（如 TTL60/flush5），杀进程前读取有效快照记录 heartbeat，重启记录时间，核验恢复时落盘 age≤TTL，再在再次过期前查询/续约；若窗口已超则本次正例不适用，不误报恢复缺陷。
+- **F-TIME**：当前 tokio `full` 不包含 `test-util`，且暂停 Tokio 不推进领域 `std::time::Instant`。默认采用固定 epoch 的纯函数测试+真实短时间等待；若 DA 明确启用已有 tokio 的 dev `test-util`，只用于异步 timer，不代替领域 TTL。tick 测试需屏障同步相位，绕过 interval 首次立即 tick；epoch 秒精度要求心跳与旧值跨秒。观察窗必须完全处在下个 tick 前，不能硬写“任意0.3s内文件不变”。
+- **F-FAIL**：先 open/注册成功，再让快照目标或 tmp 变为目录等确定性写失败；先断言注入确实失败，再触发操作。chmod555仅非特权环境辅助，不将目录初始化失败当运行期故障。撤销注入不产生 registry mutation，验证后续自动重试。故障事件与 ERROR 路径/原因一并捕获。
+- **F-WATCH**：显式 index=n 确认挂起后再触发单次变更，禁止并行额外 mutation 干扰 n+1。以单调时钟从变更请求发起前至收到 watch 完整响应计时，保守判定 ≤1s；超限样本不能算通过，可记录环境证据后复跑或无法验证。立即分支以1s请求截止且不等待 timeout 判定；显式相等的反例同时验证挂起。
+- 所有 env 修改需串行/隔离子进程并恢复环境。临时目录在系统临时根按 UUID 分配，只清理本测试拥有路径/进程；只读保留现有工作区。
 
-| TC | 所属 AC/FR | 类型 | 优先级 | 前置条件 | 步骤 | 期望结果 |
-|----|-----------|------|--------|---------|------|---------|
-| TC-01 | AC-1/FR-1 | e2e | P0 | registry 以 `PERSISTENCE__DATA_DIR=<tmp>` 启动（enabled 默认 true） | ① POST 注册实例 A（含非空 metadata）于 svc；② 记录响应 id/address/port/metadata；③ `kill -9` 进程；④ 同 env 重启 | 启动日志显示恢复 svc 下实例 A；`GET .../instances` 返回 A 且 `id`/`address`/`port`/`metadata` 与 ② 完全一致 |
-| TC-02 | AC-2/FR-3 | e2e | P0 | TC-01 完成后 | 以原 `instance_id` PUT `.../instances/{id}/heartbeat` | 200 `{"ok":true}`，无 404；`instances?healthy=true` 仍含 A |
-| TC-03 | FR-1/AC-1 | 集成 | P1 | 临时目录 + TTL=30s 的 Registry+Store | ① 注册 A；② sleep 3s；③ drop 后重新 open（模拟重启） | 实例 A 恢复且 `seconds_since_heartbeat ≥ 3`（按绝对时间换算，非重置 0）、`healthy=true` |
-| TC-04 | FR-1/AC-1 | 集成 | P0 | 同 TC-03 | ① 注册 A 后**立即**读快照文件断言；② 注销 A 后立即读文件 | ① 文件已含 A（注册即时写穿，不等刷盘周期）；② 文件已不含 A；文件中时间戳为 epoch 秒整数 |
-| TC-05 | FR-2/AC-3 | 集成 | P1 | `flush_interval_secs=2`、TTL=30 | ① 注册 A 并等首次刷盘；② 读文件记时间戳 T₀；③ 心跳数次，0.3s 内读文件；④ sleep >2s 再读文件 | ③ 文件时间戳仍为 T₀（心跳未逐次写穿）；④ 文件时间戳已更新且 > T₀（脏快照合并刷盘）；③ 期间心跳响应正常返回 |
-| TC-06 | AC-3 | e2e | P1 | 同 TC-01，`PERSISTENCE__FLUSH_INTERVAL_SECS=2`，实例持续每 1s 心跳 | 在 ≥2 个刷盘周期内轮询 `stat` 快照文件 mtime | mtime 至少更新一次且随周期推进；心跳请求全程无 5xx |
-| TC-07 | FR-4/AC-4 | 集成 | P0 | 临时目录中手工构造合法快照：实例 A 心跳=now、实例 B 心跳=now−60（TTL=30） | 以 TTL=30 启动恢复 | 列表仅含 A；B 不出现在任何实例列表；WARN 日志含丢弃计数=1 及 B 标识 |
-| TC-08 | FR-4 | 集成 | P1 | 同 TC-07 同一快照文件 | ① 以默认 TTL=30 启动 → 记结果；② 再以 env `HEARTBEAT_TTL_SECS=1` 重启恢复 | ① A、B 均恢复；② A、B 全部丢弃（判定用本次启动 TTL，非落盘时 TTL） |
-| TC-09 | FR-4/B-4/B-5 | e2e | P1 | 短 TTL（`HEARTBEAT_TTL_SECS=6`）+ provider（心跳 2s）运行 | ① 等 provider 注册并落盘；② `kill -9` registry；③ sleep 8s（>TTL）；④ 重启 registry | 恢复后 `GET /api/v1/registry/services` 为空列表；启动日志丢弃计数=宕机前实例数；provider 心跳持续 404（B-5 现状行为，仅记录不判缺陷） |
-| TC-10 | FR-5/AC-5 | 集成 | P0 | `PERSISTENCE__ENABLED=false` + 临时目录路径 | ① 注册 A、心跳、查询；② 检查 data_dir 是否创建/有文件；③ drop 重启 | ① 全部操作与 v0.1 行为一致；② 目录不创建、无落盘文件；③ 重启后注册表为空（不恢复） |
-| TC-11 | AC-5 | e2e | P0 | 无配置文件启动（`Config::load(None)` 路径），cwd=干净临时目录 | 启动后检查 cwd 下 `./data/` 与 `registry-state.json`（文件名以 AA 定案 Q6 为准） | 启动成功；data 目录与快照文件生成（默认 enabled=true 生效）；注册后文件更新 |
-| TC-12 | FR-5/AC-5 | 单元 | P0 | — | `Config::load` 分别传入 `flush_interval_secs = 0`、`-1`、非数字（TOML 与 env 两种途径） | 全部返回 Err；错误信息含配置项名（如 `flush_interval_secs`）与实际非法值 |
-| TC-13 | FR-6/AC-6 | 集成 | P0 | data 目录分别预置：① 截断半写 JSON；② 合法 JSON 但字段缺失/类型错；③ 空文件（三场景分跑） | 启动恢复 → `GET /healthz`、`GET .../services` | 三场景均：启动成功、healthz 200、注册表为空；WARN 日志含损坏**文件路径**与错误原因 |
-| TC-14 | FR-6 | 集成 | P1 | data_dir 指向不存在路径 | 启动恢复 | 目录被自动创建，启动成功、可正常注册 |
-| TC-15 | FR-6/B-3 | 集成 | P0 | data_dir 指向一个已存在的**普通文件**（无法创建目录）；或权限拒绝路径（非 root 环境） | 启动 | 启动失败（fail fast）；错误信息含路径与原因（如 `Not a directory`/`Permission denied`） |
-| TC-16 | FR-7/AC-7 | 集成 | P0 | Store 指向只读目录（chmod 555，非 root） | ① POST 注册 A；② GET 列表；③ 检查进程与日志 | ① 注册响应为 **5xx**（按 Q3 建议默认：500 + `persist_failed`，待 AA 定案回填，见 RQ-1）；② A 已入内存、列表可查；③ ERROR 日志出现；进程存活、后续查询正常 |
-| TC-17 | FR-7 | 集成 | P1 | 同 TC-16 场景 | 已注册实例发心跳；另发查询请求 | 心跳 200（心跳不落盘、不因落盘失败报错）；查询正常 |
-| TC-18 | NFR-5/AC-14 | 集成 | P1 | data 目录预置：① 有效旧快照；② 同名 `.tmp` 半写残留（模拟写盘中断） | 启动恢复 | 恢复读**旧有效快照**（不读 tmp、不整表清空）；首次落盘后 tmp 残留被正常 rename 覆盖、目录无临时文件滞留。辅以代码审查确认「写临时文件 + rename」实现（AC-14 审查项） |
-| TC-19 | FR-2/B-8 | e2e | P1 | registry 运行中，`FLUSH_INTERVAL_SECS=30`（长周期放大窗口） | ① 注册 A；② 立即 SIGTERM；③ 等进程退出后检查快照文件 | 优雅退出（exit 0）；文件含 A（关停最终刷盘）；若刷盘失败仅日志、不影响退出（尽力而为语义） |
+### 2.3 执行档位及终验政策（本轮仅设计）
 
-### B 组：watch 长轮询
+| 档位 | EXECUTE 判定与预计成本 | FINAL 要求 |
+|---|---|---|
+| T0 | 必跑 `cargo test -p velox-registry`（预计2–5分钟，编译另计），覆盖单测/集成；新入口未交付则记录阻塞 | 受影响套件快速回归必跑 |
+| T1 | 本 feature 改启动装配/配置/刷盘及 shutdown，触发构建+起进程+P0恢复/watch冒烟，预计3–8分钟 | 按最终装配风险保留证据 |
+| T2 | 配置、共享状态、API传导及兼容风险成立，应跑 `cargo test --workspace`，预计3–10分钟，并保留 fmt/clippy/build门槛证据 | 无条件全量回归，不逐包重复替代 workspace |
+| T3 | 真信号/重启/写入崩溃及原mesh链路触发，registry runner+既有demo验收，预计5–10分钟；性能专项另预估5–10分钟 | 无条件执行 e2e；环境搭建超过约10分钟可降为集成等价，说明无法覆盖的真实信号/退出/跨进程证据，不能免除或称全AC已通过 |
 
-| TC | 所属 AC/FR | 类型 | 优先级 | 前置条件 | 步骤 | 期望结果 |
-|----|-----------|------|--------|---------|------|---------|
-| TC-20 | FR-8/AC-8 | 集成 | P0 | 已注册实例使当前版本 index=n | `GET watch?index=n-1&timeout_secs=5` | **立即返回**（<1s）；HTTP 200；响应 `index`=n；快照含既有实例 |
-| TC-21 | FR-8/AC-8 | 集成 | P0 | 当前版本 index=n；发起 `watch?index=n&timeout_secs=30` 挂起 | 挂起期间另一连接注册新实例 X | 挂起请求在 1s 内返回（CI 容差 ≤2s）；响应 `index`=n+1；快照含 X |
-| TC-22 | FR-10/AC-11 | 集成 | P0 | — | 分别请求 `watch?index=0&timeout_secs=0`、`timeout_secs=301` | 均返回 400 + 统一错误结构（`{"code":...,"message":...}`） |
-| TC-23 | FR-10/AC-11 | 集成 | P0 | 当前版本 index=n | `watch?index=n`（**不传** timeout_secs），观察 3s | 请求保持挂起（3s 内无响应、连接未断）＝按默认 30s 处理；随后注入一次变更验证挂起期间唤醒正常（不必真等 30s） |
-| TC-24 | FR-8/FR-10 | 集成 | P1 | 无任何变更；`timeout_secs=2`（合法小值） | `watch?index=n&timeout_secs=2` | 约 2s 后返回 HTTP 200，`index` 仍为 n（原版本号），快照为当前快照；不报错 |
-| TC-25 | FR-8/B-7 | 集成 | P1 | ① 挂起态下 kill 重启 registry（版本号回落）；或② 直接以 index=n+100 请求 | 携带 index **大于**当前版本的请求 | 立即返回（不挂起）当前快照，响应以**新的当前 index** 纠正客户端（重启后版本从 0 重计语义） |
-| TC-26 | FR-9/AC-10 | 集成/e2e | P1 | TTL=2s、sweep=1s（短周期加速收敛）；实例 A 已注册并停发心跳；挂起 `watch?index=n&timeout_secs=30` | 等 sweep 移除 A | 挂起请求被唤醒；响应 index=n+1；快照不含 A |
-| TC-27 | FR-9 | 集成 | P1 | 挂起 `watch?index=n&timeout_secs=30` | 另一连接 DELETE 实例 | 挂起请求 1s 内唤醒；index=n+1；快照不含被注销实例 |
-| TC-28 | FR-9/AC-10 | 集成 | P1 | 当前版本 n；挂起 `watch?index=n` | 连续多次 GET `/healthz`、`/services`、`/instances`、`?healthy=true` | 3s 观察窗内挂起请求不被唤醒；再发普通 watch（index<n）确认 index 仍=n（纯查询不递增版本号） |
-| TC-29 | FR-9/Q4 附注 | 集成+审查 | P2 | 挂起 `watch?index=n`；实例 A 心跳临近 TTL | 观察 healthy 翻转窗口（TTL 到期至 sweep 执行之间）不触发唤醒 | A 的 healthy 标志在列表中翻转为 false，但 index 不递增、挂起不唤醒（健康翻转不独立触发，Q4 附注默认方案）；辅以代码审查确认 bump 仅挂接于注册/注销/剔除三事件 |
-| TC-30 | FR-8/AC-9 | e2e | P0 | registry 运行中；后台 curl 发起挂起 `watch?index=n&timeout_secs=30` | 向进程发 SIGINT（ctrl_c 等价）；观察 curl 连接与进程 | 挂起连接立即被唤醒/断开（curl 秒退，非等满 30s）；进程正常退出（exit 0）；日志无 panic |
-| TC-31 | FR-8/B-6 | 集成 | P1 | 发起挂起请求后**主动中止**该连接（模拟客户端断开）；中止期间另一连接注册实例 X | 重新携带原 index=n 请求 | 新请求立即返回（不挂起），快照含 X、index 正确；服务端无残留会话（再次挂起行为正常） |
-| TC-32 | NFR-1 | 集成 | P1 | 50 个并发挂起 watch（index=当前） | 挂起保持期间并发执行 20 次 healthz/列表查询并测延迟 | 查询全部正常返回且延迟无异常放大（tokio worker 未被长轮询占死）；随后注册一次实例验证 50 个挂起全部被唤醒 |
-| TC-33 | FR-8/B-11 | 集成 | P1 | — | ① 并发注册 50 个同服务实例；② 期间多个并发挂起 watch；③ 结束后全量查询 + watch(index=0) | ① 50 实例全部成功、id 全唯一；② 无 panic/死锁；③ 快照含全部实例、index 单调递增无回退 |
-| TC-34 | FR-2 | 集成 | P2 | 并发心跳（多实例高频）与周期刷盘并行 | 刷盘期间多次读取快照文件并解析 | 每次读到的文件心跳时间戳不早于先前读取（落盘串行化，文件不回退旧快照）；文件始终为合法 JSON |
+后续逐TC记录通过/失败/阻塞/无法验证/降级，记录命令、范围、耗时、退出、原始证据路径。任何跳过/降级均写触发判定与理由；单档超过预计2倍仍无结论停止并如实记录。TAF先核常规报告与 git log：仅当实跑T2+T3已覆盖最终feature代码提交、此后无新代码才可复用；否则无条件T0/T2/T3。报告必须列feature最终代码commit与当时HEAD、脏树差异，不能拿本次设计HEAD作最终实现证据。
 
-### C 组：v0.1 兼容回归与可观测性
+## 3. 用例表（TC-x：功能点/对应 AC/类型/前置/步骤/期望/优先级/可自动化）
 
-| TC | 所属 AC/FR | 类型 | 优先级 | 前置条件 | 步骤 | 期望结果 |
-|----|-----------|------|--------|---------|------|---------|
-| TC-35 | FR-11/AC-12 | 集成 | P0 | 开启持久化 + watch 的新版本构建 | 全端点回归：healthz；注册；heartbeat；deregister；list services（排序）；`instances?healthy=true` 过滤；未知服务/未知实例错误 | 路径/方法/请求响应 JSON 结构/状态码与 v0.1 完全一致；未知服务 404 + `service_not_found`；未知实例 404 + `instance_not_found`；v0.1 既有内嵌测试（`register_and_query_flow` 等）保持通过 |
-| TC-36 | FR-11/AC-12 | e2e | P0 | velox-demo 全链路（mesh 不改一行代码） | 运行 `velox-demo/scripts/acceptance.sh`（registry 开持久化/watch 默认配置） | 既有断言链全部通过：mesh 快照拉取、consumer 经 mesh 转发、LB 轮询、SIGKILL 剔除、SIGTERM 注销 |
-| TC-37 | FR-11 | 单元 | P0 | — | `Config::load(None)` 断言默认值 | `server.addr`、`registry.heartbeat_ttl_secs`、`sweep_interval_secs` 与 v0.1 相同；新增 persistence 节默认 enabled=true/`./data`/5s（Q1 建议） |
-| TC-38 | NFR-3/AC-13 | e2e | P1 | 自建轻量压测脚本（EXECUTE 阶段编写，见 RQ-2 手段局限） | ① 对 v0.1 代码采基线；② 对 v0.2 同条件压测：注册 1000 实例 + 5s 心跳稳态 + 并发查询，采 P99 | 注册/心跳/查询 P99 ≤ 基线 × 2；刷盘无写放大风暴（单次全量快照百 KB 量级）。结果标注参考级（非专业压测工具） |
-| TC-39 | NFR-4/AC-14 | e2e | P1 | registry 以含存量数据 data_dir 启动一次（含 1 个超时实例） | grep `logs/registry.log` 启动段 | 日志含：持久化启用标志、data_dir、恢复服务数/实例数、丢弃超时实例计数、跳过损坏文件计数（结构化字段） |
-| TC-40 | FR-8/FR-10 | 集成 | P2 | — | watch 端点：① POST；② `index=abc`；③ `timeout_secs=abc` | ① 405（方法不允许，axum 默认）；②③ 400 + 统一错误结构。注：**不带 index 参数**的缺省行为需求未定义（RQ-3），定案前本条不断言该分支 |
-| TC-41 | B-12/FR-1 | 集成 | P2 | — | 注册 metadata 含 UTF-8 中文/空格/特殊字符的实例 → 落盘 → 重启恢复 | 恢复后 metadata 与注册值逐字节一致；快照文件为合法 JSON（无字符集损坏） |
+> “单/集/e2e”即计划自动化层，审查为手工；全部为待实现/待执行案例。功能点FC-1恢复，FC-2刷盘，FC-3配置隔离，FC-4故障原子写，FC-5 watch，FC-6兼容性能观测。已知AA待改处采用G2修订目标，不冒充旧A已有一致决定。
 
-## 4. AC 覆盖矩阵（AC × TC）
+| TC | 功能点 / 对应AC或FR | 类型 / 优先级 / 可自动化 | 前置条件 | 操作步骤 | 可观察期望 |
+|---|---|---|---|---|---|
+| TC-01 | FC-1 / AC-1 | e2e / P0 / e2e | F-RESTORE；enabled=true，TTL60/flush5，独立目录；有效快照已含A，恢复时落盘age≤本次TTL | POST A含metadata；读文件确认落盘字段；记录id及heartbeat；kill -9并wait；同配置重启，及时GET | 记录SIGKILL退出及重启命令；启动日志恢复svc/A；再次过期前id/address/port/metadata完全一致。成功前提不能用“实际心跳未超TTL”替代 |
+| TC-02 | FC-1 / AC-2 | e2e / P0 / e2e | TC-01成功恢复且尚未再次剔除；核验同一落盘窗口 | 原id PUT heartbeat，再查healthy列表 | 200 `{"ok":true}`、无404且含A；落盘已超TTL的样本归TC-09，不适用成功断言 |
+| TC-03 | FC-1 / AC-1/2 | 集 / P1 / 集成 | F-SNAPSHOT与固定N，A heartbeat=N−3，TTL30/flush5 | load/restored后查询并原id心跳；另做真实drop/open，记录前后epoch及耗时 | 字段保留，恢复年龄来自落盘epoch而非归零（允许秒精度）；原id200。drop/open仅集成恢复证据，不代替TC-01信号 |
+| TC-04 | FC-1 / AC-1、FR-1 | 集 / P0 / 集成 | 有效Store/Router、F-PATH | POST A成功后立即读文件；DELETE A成功后立即再读 | 响应完成即文件含A/不含A，epoch为整数，DTO完整；均不等待下个周期 |
+| TC-05 | FC-2 / AC-3、FR-7 | 单+集 / P1 / 单测+集成 | 5a TTL30/flush2；相位屏障、跨epoch秒；5b F-FAIL | a 注册并记录T0，在已知tick之后、下次前心跳，读取避开tick窗口，再等下次tick；b dirty置位后注入周期写失败，恢复可写且不发新mutation，等下个周期；c快照读取后再心跳 | a tick前文件heartbeat=T0，下一脏tick后>T0且心跳响应不await IO；b失败ERROR，dirty保留/重置，下一周期文件追上内存；c成功flush不得清掉快照之后的新dirty，再一周期持久化最新值。后台每周期合并一次仅限心跳，不限制结构写穿 |
+| TC-06 | FC-2 / AC-3 | e2e / P1 / e2e | TTL30/flush5，持续每5s心跳，相位与epoch记录 | 覆盖至少3个周期，采mtime/文件heartbeat及心跳耗时；保持窗口内无结构变更 | 脏周期文件推进，心跳全部成功且不等本轮IO；mtime辅助，结合文件内容/路径调用审查证明合并，不以文件系统mtime粒度独立判失败 |
+| TC-07 | FC-1 / AC-4 | 单+集 / P0 / 单测+集成 | F-SNAPSHOT，固定N，TTL30，A=N、B=N−60 | 恢复、查服务/全部/健康列表及统计日志 | 仅A恢复，B在任意列表不存在，dropped_expired=1、WARN含丢弃信息；无TTL宽限 |
+| TC-08 | FC-1 / AC-4 | 单+集 / P1 / 单测+集成 | 同一不可变夹具副本，固定N，A=N−3/B=N−4；flush1 | a TTL30恢复；b新副本TTL2恢复；c固定N/TTL30置C=N−30,D=N−31 | a恢复2；b丢弃2；c恢复C丢弃D，严格age>TTL；以本次TTL为准。禁止沿用旧now−60却声称TTL30恢复的夹具 |
+| TC-09 | FC-1 / AC-4、B-4/5、FR-2 | 单+e2e / P1 / 单测+e2e | a TTL6/flush1，provider心跳2s、有效文件；b固定epoch反例 | a kill registry并等待>TTL后重启；b落盘t20、实际心跳t25、t29崩溃/t51恢复、TTL30 | a恢复为空，计数匹配；未改provider持续404需外部重注册是已知限制；b落盘age31被丢弃，即使真实age26；不把该情形报为恢复缺陷 |
+| TC-10 | FC-3 / AC-5 | 单+集 / P0 / 单测+集成 | enabled=false、TTL1、默认flush5；TOML及env分别；已存在快照与不存在目录分别 | load；注册/心跳/查询/注销，重启；观察目录及任务 | 小TTL配置正常；不创建/不写/不恢复，不起flusher，已有文件内容不变，重启空表；跨项flush<TTL校验仅启用时适用（待AA同步） |
+| TC-11 | FC-3 / AC-5 | e2e / P0 / e2e | 无配置文件/无相关env，干净临时cwd | Config::load(None)启动；查目录；POST A后读文件 | 默认true/./data/5，先创建隔离目录且healthz200；首次空启动不要求快照已存在，POST成功后F-PATH有效文件含A，根默认值不变 |
+| TC-12 | FC-3 / AC-5 | 单+进程 / P0 / 单测+e2e | 独立配置/env进程 | TOML/env各测flush=0/负数/非数字、空data_dir、非法ENABLED；enabled=true测flush=TTL、>TTL；部分节`enabled=false`及只给data_dir | 语法/类型、flush0、空目录等基本非法值禁用时仍拒绝（待AA明确），错误含配置项和实际值；启用才拒绝跨项；部分节其余字段取true/./data/5默认，TOML及env覆盖优先级可判定，不用serde bool的false误代true |
+| TC-13 | FC-4 / AC-6 | 集 / P0 / 集成 | F-SNAPSHOT分别改为截断、缺字段/类型错、空文件、format_version99，每次独立目录 | 各启动恢复并GET healthz/services | 每种整文件跳过、空表、healthz200；WARN含实际文件路径及原因，skipped=1；不部分恢复 |
+| TC-14 | FC-3 / FR-6、AC-5 | 集 / P1 / 集成 | F-PATH根及子目录均不存在 | open、启动、注册 | 递归创建所需隔离目录，启动成功，POST后有效快照仅在专属子目录；不修改config |
+| TC-15 | FC-4 / FR-6、B-3 | 集+进程 / P0 / 集成+e2e | data_dir或必需子目录位置为普通文件；非特权权限分支辅助 | 启动 | 非零退出、未接客，错误含路径与原因；此为初始化失败，独立于TC-16运行期写失败 |
+| TC-16 | FC-4 / AC-7 | 集 / P0 / 集成 | 正常open后F-FAIL注入；注册及注销分别新夹具 | a POST A后查内存；b预注册B，注入失败后DELETE并查询；读取响应及日志 | a/b均500 `{"code":"persist_failed","message":"registry state persist failed"}`；A内存可查、B内存已移除，服务继续，ERROR含内部路径/原因，HTTP不泄露路径。RQ-1已核销；结构失败仍置dirty供重试 |
+| TC-17 | FC-4 / AC-7、FR-7 | 集 / P1 / 集成 | 正常注册后注入故障，周期/剔除各触发 | 心跳及查询；制造sweep写失败；撤销故障，不再mutation等下周期 | 心跳200、查询正常、无panic；后台失败ERROR；无新mutation仍自动重试，最终文件反映移除后的表（含全空场景），不留旧实例 |
+| TC-18 | FC-4 / AC-14 | 集+审查+e2e / P1 / 集成+e2e，审查手工 | a有效旧F-SNAPSHOT+半写tmp；b正常实例进程，受控文件写观察 | a open/load；审查temp→sync_all→rename；b独立子例TC-18b由registry runner触发写入并在tmp写入阶段kill -9、wait，解析正式文件并重启 | a open时尽力清理tmp，恢复旧正式文件；不能说首次写才清理。b记录命令/时间/信号退出/tmp阶段命中证据/正式JSON及恢复结果，正式文件只能旧完整或新完整，不把半写当有效。未命中写窗口应重试有限次数并记无法验证，tmp模拟或普通kill不可替代此项；掉电强持久性不在承诺内 |
+| TC-19 | FC-2 / FR-2、B-8 | e2e / P1 / e2e | TTL60/flush10合法配置，tick同步；注册已写穿 | 跨epoch秒再心跳制造未落盘值，确认文件仍旧；下次tick前SIGINT，wait后读文件；故障分支另跑 | 成功路径exit0、落盘heartbeat等于最后心跳；仅“含A”不算最终刷盘证据。故障路径最终刷盘ERROR且尽力退出；不以SIGTERM替代当前ctrl_c |
+| TC-20 | FC-5 / AC-8 | 集 / P0 / 集成 | 单次注册后n>0，无其他mutation | GET watch?index=n−1&timeout_secs=5 | 1s截止前立即200，index=n、services含既有健康实例；不挂至timeout |
+| TC-21 | FC-5 / AC-8 | 集 / P0 / 集成 | F-WATCH，显式index=n挂起，timeout30 | 另一连接仅POST X一次，记录完整响应计时 | 严格≤1s，index=n+1且快照含X；环境抖动超限记录实测/复跑或无法验证，绝不按≤2s通过 |
+| TC-22 | FC-5 / AC-11 | 集 / P0 / 集成 | 无并发mutation | 显式index0及缺省index两类各请求timeout0/301 | 全部400 `code=invalid_parameter`、非空message统一JSON；即使缺省index走立即分支也必须先校验参数；语法拒绝另见TC-40 |
+| TC-23 | FC-5 / AC-11 | 单+集 / P0 / 单测+集成 | 默认参数解析入口；显式相等index=n | 单测不传timeout解析；集成观察3s后变更唤醒 | 默认值精确=30（必要精确证据）；3s挂起仅辅助且随后可唤醒，不据此单独声称证明30s；不假定test-util已启用 |
+| TC-24 | FC-5 / FR-8/10、AC-11 | 集 / P1 / 集成 | index=n、timeout2，无mutation | 发请求并以单调时钟计时 | 不提前于2s，测试上限3s内返回200、原index及当前健康快照；超出上限记录环境/失败，无需等待默认30s |
+| TC-25 | FC-5 / AC-8、B-7 | 集+e2e / P1 / 集成+e2e | 新/恢复服务版本均0；另有版本n>0 | 大于当前index请求；真实重启后用旧高index请求 | 立即200且index纠正为当前值（重启0），快照为当前恢复健康数据；重启版本不从磁盘延续 |
+| TC-26 | FC-5 / AC-10 | 单+集 / P1 / 单测+集成 | TTL2/sweep1/flush1；A及B同批过期；挂起index=n | 控制一次sweep移除A/B；另空sweep对照 | 有移除批次只+1、挂起唤醒且不含A/B；无移除不增。领域单测控制同批，集成观察相同通知；禁止默认flush5导致配置拒绝 |
+| TC-27 | FC-5 / AC-10、FR-9 | 集 / P1 / 集成 | 显式index=n挂起，已有A | 单次DELETE A | ≤1s唤醒、index=n+1、快照无A；与TC-16区分正常写路径 |
+| TC-28 | FC-5 / AC-10 | 集 / P1 / 集成 | 无TTL到期/其他mutation；显式index=n挂起 | 3s内GET healthz/services/instances/healthy/watch旧index | 原挂起不因查询唤醒，旧index响应和领域版本始终n；查询后再一次注册可正常唤醒 |
+| TC-29 | FC-5 / FR-9、QA-3 | 单+集+审查 / P1 / 单测+集成 | sweep延后，TTL2/flush1；A过期未剔除，显式index=n挂起 | 确认healthy=false但无bump；随后迟到heartbeat使A复活；再健康内heartbeat | 自然healthy→unhealthy不单独bump；复活+1、≤1s唤醒且快照含健康A；普通续约不增。事件审查表四类：注册/注销/一次sweep/复活，收回旧“三类”期望 |
+| TC-30 | FC-5 / AC-9 | 集+e2e / P0 / 集成+e2e | AppState shutdown Receiver可注入（旧A已定）；真进程挂起多个watch(timeout30) | 集成send(true)；真进程SIGINT并wait | 集成全部1s内200当前快照或断开；进程分支挂起全部结束且5s内exit0、无panic，不等30s。注入集成不能替代SIGINT退出证据 |
+| TC-31 | FC-5 / FR-8、B-6 | 集 / P1 / 集成 | 挂起index=n | abort请求；注册X；同原index重连，再以新index挂起 | 重连立即获得X/新index，新相等请求可挂起；无跨请求会话泄漏或异常 |
+| TC-32 | FC-5 / NFR-1 | 集 / P1 / 集成 | 50个watch均确认挂起，TTL宽裕，固定环境 | 并发20次healthz/列表，每请求1s截止；注册X | 查询全部成功、无截止超时；50请求全部≤1s获得新快照，无worker被同步等待占死；代码审查长轮询无阻塞等待 |
+| TC-33 | FC-5/2 / FR-8、B-11 | 集 / P1 / 集成 | F-PATH，受控任务屏障，无其他mutation | 并发50注册及watch；再与周期flush争用，注销已知集合；join后最终flush/读文件 | id唯一、无panic/死锁；单独注册阶段最终index增50，注销按成功次数增；响应version与同锁快照一致（可合并通知不要求逐事件返回）；最终文件等于最终实例集，无旧写覆盖注销 |
+| TC-34 | FC-2 / FR-2、NFR-1/5 | 单+集+审查 / P1 / 单测+集成 | F-SNAPSHOT，受控时间/状态序列，暂停一次IO并保持flush锁 | 并发心跳/结构写穿/周期/关停flush争用；快照读取后再mutation；解屏障读最终文件 | 四路同一flush_lock覆盖“锁内取快照→await阻塞IO完成”；领域RwLock仅短暂克隆，无IO/await，不反向等待flush锁；成功不得清掉并发dirty，失败重置dirty；最终语义状态最新、正式文件始终合法。墙钟回拨/秒级换算本身不能判旧写回退 |
+| TC-35 | FC-6 / AC-12 | 集 / P0 / 集成 | enabled=true，新AppState测试setup，原HTTP断言基准 | 回归healthz/注册/心跳/注销/排序服务/healthy过滤/未知服务及实例；模拟mesh list→healthy拉取 | 原路径/方法/JSON/状态不变，404 service_not_found/instance_not_found与ok结构保留；原断言保留，允许setup适配AppState，不以Rust构造签名变更判API不兼容 |
+| TC-36 | FC-6 / AC-12 | e2e / P0 / e2e | 原demo脚本、原mesh/provider/config代码，固定端口空闲、隔离registry数据 | 仅运行`bash velox-demo/scripts/acceptance.sh`，采退出/各步骤日志并核对改动清单 | 原断言全通过，mesh周期拉取/转发/LB/TTL链路正常；消费侧零改。原脚本不能证明registry重启/原子写；不扩写demo脚本 |
+| TC-37 | FC-3/6 / AC-5/12、Q6 | 单+e2e / P0 / 单测+e2e | a load(None)无env；b两个原进程同临时cwd，默认根./data | a断默认；b先registry注册落盘，再启动config查namespace，写删普通键及registry-state namespace，重启两者再读；反顺序再跑 | a server/TTL30/sweep5沿v0.1，persistence=true/./data/5已定；b config不自动装载registry快照，顶层registry-state.json即便经config创建也与registry子目录快照隔离；各自数据重启完整、互不覆盖，tmp也不在config扫描顶层；config代码不改（布局待AA最终确认） |
+| TC-38 | FC-6 / AC-13 | e2e专项 / P1 / e2e性能脚本 | 真v0.1提交`28c91140dd14a29d25dcbc270b2bb23aeb32b2f0`隔离源码/构建，不切当前分支；v0.2最终代码，协议见下 | 同机release/同负载测两版，分注册/心跳/查询统计原始样本、P99和错误 | 每端点v0.2/v0.1 P99≤2才满足；enabled=false仅辅助，不能代基线；缺测/错误/样本不足不得标通过，RQ-2留待证据交付 |
+| TC-39 | FC-6 / AC-14、NFR-4 | e2e / P1 / e2e | a有效快照含1存活/1过期；b独立损坏快照；c禁用/缺文件分别 | 每场景独立启动，采新runner绝对日志或logs/velox-registry.log；结合16/18/21/24读日志 | a enabled/data_dir/恢复服务实例数/丢弃1/skipped0；b WARN含文件路径原因、恢复0/skipped1；c启停状态明确；注册/注销/剔除INFO，写失败ERROR，watch唤醒/超时DEBUG。旧A缺skipped字段须AA补；单文件不可同时有效且损坏 |
+| TC-40 | FC-5 / AC-8/11、FR-8/10 | 单+集 / P1 / 单测+集成 | 新端点参数入口，RQ-3待AA一致定案；空表v0/恢复有实例v0/版本>0分别 | 各场景缺省index及显式0；显式等值；POST；index/timeout分别abc、负数、u64溢出、空值，搭配缺省index重测 | G2目标：缺省index首次快照立即200；显式0在v0挂起，在v>0立即；显式等值仍挂起。先完整校验，任何语法/范围错均400 invalid_parameter+message，POST405；handler捕获QueryRejection转新端点AppError，不能影响旧路由错误。该目标旧A尚矛盾，见RQ-3 |
+| TC-41 | FC-1 / FR-1、B-12 | 集 / P2 / 集成 | F-SNAPSHOT/有效窗口；中文、空格、引号、换行等metadata，服务名沿v0.1 | 注册、读JSON、重open恢复比较 | metadata字符串内容完整相等，JSON合法，id/字段不变；不要求序列化转义后字节顺序一致，不新增服务名校验 |
 
-| AC | 映射 TC | P0/P1 缺口 |
-|----|---------|-----------|
-| AC-1 | TC-01(P0)、TC-03(P1)、TC-04(P0) | 无 |
-| AC-2 | TC-02(P0) | 无 |
-| AC-3 | TC-05(P1)、TC-06(P1) | 无（P1 覆盖；「响应不等待刷盘」由 TC-05③ 观察 + 代码审查） |
-| AC-4 | TC-07(P0)、TC-08(P1)、TC-09(P1) | 无 |
-| AC-5 | TC-10(P0)、TC-11(P0)、TC-12(P0) | 无 |
-| AC-6 | TC-13(P0) | 无 |
-| AC-7 | TC-16(P0)、TC-17(P1) | 无（期望值依赖 RQ-1 定案回填） |
-| AC-8 | TC-20(P0)、TC-21(P0)、TC-25(P1) | 无 |
-| AC-9 | TC-30(P0) | 无 |
-| AC-10 | TC-26(P1)、TC-27(P1)、TC-28(P1) | 无 |
-| AC-11 | TC-22(P0)、TC-23(P0)、TC-24(P1) | 无 |
-| AC-12 | TC-35(P0)、TC-36(P0)、TC-37(P0) | 无 |
-| AC-13 | TC-38(P1) | 无（手段缺失见 RQ-2） |
-| AC-14 | TC-18(P1)、TC-39(P1) | 无（精确崩溃窗口以「tmp 残留模拟 + 代码审查」组合，见第 2 章风险 4） |
+### TC-38 性能专项执行协议
 
-结论：14 条 AC 全部映射，每条至少 1 条 P0 或 P1 用例，无覆盖缺口。
+执行前在报告冻结机器/OS、CPU、Rust与两版准确commit、release构建参数、日志级别、客户端及请求体、数据/日志路径。真v0.1源码可从指定commit导出到系统临时目录（或既有隔离checkout），使用独立target目录；不切当前工作分支、不修改当前代码。先核该commit registry确为内存v0.1。
 
-## 5. 边界场景覆盖对照（需求第 5 节 B-1…B-12）
+固定100服务×每服务10实例=1000实例，200心跳/秒均匀排程使每实例5s续约；查询100请求/秒交替services及healthy实例列表，分端点记录；注册churn20次/秒，先注销后补同一槽位，保留不参与churn的稳定样本池，任意时刻不超过1000实例。客户端上限并发32，两版相同；每次请求从发起（含排队另记）到完整响应以单调时钟计时；客户端不能维持计划负载则本轮无效，禁止偷偷减负载。预热≥30s、采样≥60s且注册/心跳/各查询端点每类≥1000有效样本，不足延长。稳定心跳池不因churn产生预期404。
 
-| 边界 | 覆盖用例/说明 |
-|------|--------------|
-| B-1 落盘失败 | TC-16（注册 5xx + 内存优先 + ERROR）、TC-17（心跳不受影响） |
-| B-2 恢复文件损坏/半写 | TC-13（三形态损坏逐场景）、TC-18（tmp 残留不污染恢复） |
-| B-3 data 目录不可创建 | TC-15（fail fast 含路径） |
-| B-4 宕机 > TTL 全丢弃 | TC-09（含 provider 心跳 404 现状记录） |
-| B-5 provider 无重注册 | TC-09 附加观察项（仅记录行为，不判缺陷；修复属 velox-demo 范围外） |
-| B-6 watch 客户端断开/重连 | TC-31（无服务端会话残留） |
-| B-7 版本号回落（重启） | TC-25（index > 当前 → 立即返回 + 纠正） |
-| B-8 关停竞态（最终刷盘 + watch 唤醒） | TC-19（最终刷盘尽力而为）、TC-30（挂起全断开 + exit 0） |
-| B-9 时钟回拨 | **不设用例**：需求明示单机假设下不防御、文档声明已知限制；交付时核对 README 含该说明 |
-| B-10 多进程共享 data_dir | **不设自动化用例**：部署约束（单实例独占），属文档审查项；交付时核对 README/部署文档明示 |
-| B-11 并发注册/并发 watch 唤醒 | TC-33（并发注册 + index 单调）、TC-32（并发挂起不拖垮服务）、TC-34（刷盘不回退） |
-| B-12 国际化/字符集 | TC-41（metadata 特殊字符 roundtrip） |
+P99用有效成功样本排序后 nearest-rank `ceil(0.99*n)`；全部失败/超时/排队延迟另计，记录计划/实际吞吐与每端点错误率，验收有效测量要求无请求错误（存在错误则先记录缺陷/无法验证，不得靠丢失败样本改善P99）。保留原始逐请求时序/状态、摘要及分端点比值，每项≤2；脚本轻量不等于“仅供参考免验”。后台心跳刷盘每周期最多一次全量写，结构注册/注销/剔除仍逐次写穿，不能承诺全部IO每5s一次。RQ-2为性能证据待交付，不降低AC-13。
+
+## 4. AC 覆盖矩阵（AC × TC，标注 P0/P1 缺口）
+
+| AC | P0/P1用例 | 设计缺口 / 执行证据要求 |
+|---|---|---|
+| AC-1 | 01(P0)、03(P1)、04(P0) | 有映射；01必须真实kill/restart及落盘heartbeat恢复窗口 |
+| AC-2 | 02(P0)、03(P1) | 有映射；恢复后再剔除前同id200 |
+| AC-3 | 05(P1)、06(P1) | 有映射；相位/epoch、响应不awaitIO、失败无mutation重试 |
+| AC-4 | 07(P0)、08/09(P1) | 有映射；固定N严格边界、配置TTL变更及陈旧反例 |
+| AC-5 | 10/11/12/37(P0)、14(P1) | 有映射；G2-3基本/跨项校验边界与G2-5路径待AA同步 |
+| AC-6 | 13(P0) | 有映射；各坏文件独立启动含未知版本 |
+| AC-7 | 16(P0)、17(P1) | 无规格缺口；500 persist_failed已核销RQ-1，仍待实跑 |
+| AC-8 | 20/21(P0)、25/40(P1) | 显式分支有映射且≤1s；缺省分支RQ-3待AA一致规则 |
+| AC-9 | 30(P0) | 通道集成+SIGINT进程退出均保留 |
+| AC-10 | 26/27/28(P1) | 批次+1/无变更不增；29补复活设计回归 |
+| AC-11 | 22/23(P0)、24/40(P1) | 默认值精确单测；QueryRejection映射待AA同步 |
+| AC-12 | 35/36/37(P0) | 原断言/setup适配、原mesh/已有demo只运行 |
+| AC-13 | 38(P1) | 设计有映射；RQ-2真基线测量尚无执行证据，不能判满足 |
+| AC-14 | 18/39(P1) | 18b真实写中kill+审查+分启动日志；没有命中证据不能以tmp模拟核销 |
+
+14AC均至少一条P0/P1设计案例，但**不作“全部无缺口/已满足”结论**：架构待同步、RQ-3及性能/崩溃实跑证据均须关口复核。本文无任何AC实跑结果。
+
+## 5. 边界场景覆盖对照
+
+| 边界 | 对应TC及判据 |
+|---|---|
+| B-1 落盘失败 | 05b/16/17/34：运行期内存优先、500精确、ERROR、失败dirty重试、空表也能修复 |
+| B-2 损坏/半写 | 13/18a/18b：整文件跳过、open清tmp、真实写中kill证据独立 |
+| B-3 目录不可创建 | 15：启动非零含路径，区别运行期失败 |
+| B-4 宕机>TTL | 07/08/09：落盘age严格>TTL丢弃，无宽限；真实心跳不替代落盘前提 |
+| B-5 provider无重注册 | 02恢复正例、09过期404限制、README审查，零改provider |
+| B-6 客户端断开 | 31：abort/重连独立请求 |
+| B-7 版本回落 | 25/40：重启0纠正旧高index、缺省与显式0分离 |
+| B-8 关停竞态 | 19/30/34：最后心跳落盘、SIGINT退出、flush锁竞争 |
+| B-9 时钟回拨 | 34区分真丢写与epoch偏差；手工核README已知限制，不新增回拨防御保证 |
+| B-10 双registry共享目录 | 手工核README单registry独占声明，不要求多registry文件锁；37b单独验证registry/config同cwd隔离，不能混同两种约束 |
+| B-11 并发 | 26/29/32/33/34：批次、复活、50watch、版本快照一致、四路锁完整覆盖 |
+| B-12 字符串 | 41：完整roundtrip、沿用服务名语义 |
 
 ## 6. 需求问题清单（RQ-x）
 
-> 原则：只记录、不臆断修正需求；处置权在 GATE2（QA）与流水线。
+本轮未新增需求矛盾。保留历史编号及原文，区分已核销、待执行证据与架构待定；不代替QA关闭GATE2。
 
-### RQ-1（低）：AC-7 的 5xx 具体状态码与错误 code 待 AA 定案，用例期望需回填
-- **描述**：AC-7 写「注册按 Q3 定案语义响应」，Q3 仅给建议默认（5xx）；GATE1 评审 QA-6 已指出应具体化（如 500 + `persist_failed`），但截至本工序尚未定案。
-- **证据**：`01-requirements.md` §7 Q3、§4 AC-7；`01-requirements-review.md` QA-6（「定案时明确如 500 + persist_failed，并纳入 error.rs 变体清单」）。
-- **影响**：TC-16 当前按建议默认「500 + `persist_failed`」预写期望；若 AA 定案为其他状态码/code（如 503），执行前需回填 TC-16（及 error.rs 相关断言），不影响用例结构。同性质依赖：watch 响应字段名/文件名（Q4/Q6）均为建议形态，TC 已标注「以 AA 定案为准」。
+### RQ-1（已核销）：AC-7 的 5xx 具体状态码与错误 code 待 AA 定案，用例期望需回填
 
-### RQ-2（中）：AC-13 压测验收手段缺失——无压测工具、无 v0.1 基线、采集方法未定义
-- **描述**：AC-13 要求「1000 实例、5s 心跳压测，P99 ≤ v0.1 同条件基线 × 2」，但仓库无任何压测资产（无 criterion、无负载脚本），v0.1 基线数据未留存，「同一压测条件下对比」的具体采集方法（并发数、采样窗口、测量点）需求未定义。
-- **证据**：`01-requirements.md` §4 AC-13、§3 NFR-3；`scripts/`（test/common/build/run）与 `velox-demo/scripts/`（仅 acceptance.sh）资产清单。
-- **影响**：AC-13 无法以现有 CI 门槛自动判定。建议二选一：① 流水线批准 EXECUTE 阶段自建轻量压测脚本（curl 并发或独立 rust bin，先对 v0.1 采基线），结果标注参考级；② 明示 AC-13 降级为验收期人工专项。当前用例 TC-38 按 ① 预设，若裁决为 ② 则 TC-38 移出自动化范围。
+- 原描述：AC-7写“注册按Q3定案语义响应”，Q3仅给建议默认5xx，具体code待定。
+- 证据/裁决：A §4.6/4.7/9与G2 §6已固定500 `persist_failed`、message `registry state persist failed`；内部IO细节仅ERROR。
+- 本轮：TC-16注册及注销均精确回填，矩阵不再称待定。核销规格不确定性，不代表AC-7测试通过。
 
-### RQ-3（低）：watch 请求未携带 index 参数时的行为未定义
-- **描述**：FR-8 端点形态为 `watch?index={n}&timeout_secs={t}`，AC-11 仅定义 `timeout_secs` 缺省按 30s 处理；客户端**不传 index** 的行为（404/400/按 index=0 立即返回）需求未写。新客户端首次订阅是该场景的自然入口。
-- **证据**：`01-requirements.md` §2 FR-8、§4 AC-8/AC-11（仅覆盖「携带 index」与「timeout_secs 缺省」）。
-- **影响**：影响 TC-40 断言范围与实现分支。建议定案为「缺省按 index=0 处理 → 立即返回当前快照」（与 B-7「index 过旧立即返回」语义一致）；定案前 TC-40 不断言该分支。
+### RQ-2（验收证据待交付，保留）：AC-13 压测验收手段缺失——无压测工具、无 v0.1 基线、采集方法未定义
+
+- 原描述：AC-13要求1000实例/5s心跳/P99≤v0.1同条件×2，但无现成压测资产和基线采集数据。
+- 证据：R AC-13/NFR-3；G2 §6/G2-6允许验收期性能专项，明确不能开关v0.2代替v0.1；旧A §1/6.4仍写可选/开关对比，AA待同步。
+- 处置：TC-38已冻结可执行测量协议、真正v0.1 commit及结果要求，新脚本限定registry内；执行时补原始样本和比值。当前未测，不自动豁免、不降阈值，不作为新增SA需求问题。
+
+### RQ-3（未消解，交AA及GATE2仲裁）：watch 请求未携带 index 参数时的行为未定义
+
+- **保留原文描述**：FR-8端点形态为`watch?index={n}&timeout_secs={t}`，AC-11仅定义`timeout_secs`缺省按30s处理；客户端不传index的行为（404/400/按index=0立即返回）需求未写。新客户端首次订阅是该场景的自然入口。
+- **保留原文影响**：影响TC-40断言范围与实现分支。旧建议“缺省按index=0处理→立即返回”不足以处理服务端version=0，故不再用该建议推定已有一致契约。
+- 现行证据：旧A §4.7第1步称缺省0立即返回，第3/4步又只允许不等立即、相等等待；空表与恢复后version=0反例仍成立。G2 §6 RQ-3/G2-2退AA决定：缺少index作为首次快照立即返回；保留Option区分显式0，先完整校验，显式相等仍挂起。
+- 本轮TC-40按上述G2目标完整设计三种版本/数据场景、缺省/显式0及参数错误映射；该目标不能宣称旧架构已定案。读取版本尚未消解，TAD WARN留原文与反例供GATE2仲裁；不要求SA降低/重写显式相等语义。
+
+**本轮结果**：41主TC与14AC已逐条修订；RQ-1核销，RQ-2性能专项证据待执行，RQ-3架构矛盾待AA/GATE2确认。G2-1/3/5的dirty流程、禁用基本校验、隔离路径及测试入口仍须AA落成一致版本后复核；本文已写出明确回归目标，不替AA宣告完成。
