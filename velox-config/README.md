@@ -48,9 +48,9 @@ curl localhost:8200/api/v1/config/velox-mesh/governance
 
 > 日志（addlog）：进程自身写 `logs/velox-config.log` 并按大小轮转（含活跃共 3 份、单份 200 MiB 硬上限，归档 `.log.1/.log.2`）；默认 `warn` 静默 INFO。详见 [velox-mono/docs/adr/0002-log-rotation.md](../velox-mono/docs/adr/0002-log-rotation.md)。
 
-`server.max_concurrent_requests` 为单实例进程级最大并发处理请求数（≥1，非法值启动失败）。
-默认 10 对高并发部署是行为收紧：超限请求立即收到 429（`code=too_many_requests`，附带 `Retry-After: 1`）；
-按峰值在途请求数调大即可，`/healthz` 不受限流影响。
+`server.max_concurrent_requests` 为单实例进程级最大并发处理请求数：合法技术域 `1..=U`（`U = min(i64::MAX, usize::MAX, Semaphore::MAX_PERMITS)`，随平台），非法值或超界启动即失败（超界报错含上界 `U`）；空环境变量不覆盖配置文件中的值（文件有值则保留文件值）；配置仅在启动时加载一次，修改需重启生效。
+默认 10 对高并发部署是行为收紧：超限请求立即收到 429（`code=too_many_requests`，附带 `Retry-After: 1`）；按峰值在途请求数调大即可，`/healthz` 不受限流影响。
+日志核验前提：默认 `warn` 级别下启动 INFO 行静默（以饱和行为与每拒 WARN 日志证明生效），需查看启动上限 INFO 行时显式设置 `RUST_LOG=info` 或 `VELOX_CONFIG__LOG__LEVEL=info`。
 
 ## 测试
 

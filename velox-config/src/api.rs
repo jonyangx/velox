@@ -13,9 +13,15 @@ use crate::error::AppError;
 use crate::limit::{self, ConcurrencyLimit};
 use crate::store::Store;
 
-/// 仅给业务路由挂限流层。`route_layer` 语义：路由未命中（404/405）不执行中间件，
-/// 不占名额——与 FR-2“覆盖业务路由”口径一致。healthz 豁免（Q1）由结构保证：
-/// 它注册在该层之外。
+/// 仅给业务路由挂限流层。`Router::route_layer` 语义（axum 0.8.9 源码实证，
+/// 见 `path_router.rs:311-341` 与 `method_routing.rs:967-993`）：
+/// - 路径未命中（404）不执行本层中间件，不占名额；
+/// - 路径命中但方法不匹配（405）会先经过本层（层包住整个 MethodRouter，含其 405 回退）：
+///   饱和时被限流层以 429 拒绝（不产生 405），未饱和时短暂占用名额后由 MethodRouter
+///   返回 405 并立即归还——不超卖、无存储访问，与 FR-2"覆盖业务路由"口径一致。
+///
+/// healthz 豁免（Q1）由结构保证：它注册在该层之外，业务池饱和时探针不受影响，
+/// 且不为探针放宽业务上限（单一信号量，无第二名额池）。
 pub(crate) fn limit_routes<S>(limit: ConcurrencyLimit, routes: Router<S>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
