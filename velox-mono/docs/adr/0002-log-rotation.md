@@ -2,7 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-11-26
-- 决策人：addlog feature（BRD `velox-mono/docs/brd/001-addlog.md`；架构定稿 `docs/specs/addlog/02-architecture.md`，GATE2 PASS）
+- 决策人：addlog feature（BRD `velox-mono/docs/brd/001-addlog.md`；架构定稿 `velox-mono/docs/specs/addlog/02-architecture.md`，GATE2 PASS）
 - 关联：ADR 0001（workspace 布局）、development.md §3.4（日志规范）、§5（配置规范）
 
 ## 背景
@@ -78,5 +78,5 @@ tracing-appender = { version = "=0.2.4", default-features = false }
 
 ## 参考
 
-- 需求：`docs/specs/addlog/01-requirements.md`（冻结）；架构：`docs/specs/addlog/02-architecture.md`（GATE2 PASS，D1～D8 与 §4 全部机制定案）
+- 需求：`velox-mono/docs/specs/addlog/01-requirements.md`（冻结）；架构：`velox-mono/docs/specs/addlog/02-architecture.md`（GATE2 PASS，D1～D8 与 §4 全部机制定案）
 - 上游源码取证：tracing-appender 0.2.4（队列/lossy/guard 100ms/1000ms 握手）、file-rotate 0.7.6（否决对比）、time 0.3.36/time-core 0.1.2/time-macros 0.2.18（MSRV 1.67 ≤ 1.80）

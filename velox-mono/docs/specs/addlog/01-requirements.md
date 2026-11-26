@@ -1,7 +1,7 @@
 # 需求分析：子系统日志本地文件 rotate（addlog）
 
 > 工序：F-SA · Feature：addlog · BRD：`velox-mono/docs/brd/001-addlog.md`（逐字引用见 §1.2）
-> 状态：待评审 · 关联工序：F-TA-C（架构）、F-GATE1（评审）
+> 状态：已交付（GATE3 验收通过，见 05-acceptance.md；测试终验轮 F-TA-F 通过）· 关联工序：F-GATE3（验收）
 
 ## 1. 背景与目标
 

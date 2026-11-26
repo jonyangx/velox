@@ -1,7 +1,7 @@
 # 需求分析：velox-config 单实例最大并发请求限流
 
 > feature slug: `instance-concurrency-limit`
-> 状态：GATE1 定向返工已回填，待 GATE1 复审；Q1～Q6 均按本轮关口裁决处置，未决问题 0 项（见第 7 节）。本轮仅修需求，不代表关口通过或代码缺口已修复。
+> 状态：已交付（GATE3 有条件通过，收口/放行条件以 05-acceptance.md 为准；04 报告随规格迁移入库）
 
 ## 1. 背景与目标
 

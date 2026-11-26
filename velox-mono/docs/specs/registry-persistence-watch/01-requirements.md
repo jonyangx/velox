@@ -1,7 +1,7 @@
 # 需求分析：velox-registry v0.2 —— 状态持久化 + watch 推送（registry 侧）
 
 > feature slug: `registry-persistence-watch`
-> 状态：定向修订待 GATE1 复审（第 1 轮，仅 G2-4 与 G2-5 的需求归属修订；含 9 个待确认问题，见第 7 节）
+> 状态：已交付（GATE3 有条件通过，放行条件以 05-acceptance.md 为准；AC-13/TC-38 性能证据按条件另行闭合）
 > 上游依据：`velox-mono/docs/subsystems.md`「velox-registry —— 服务注册中心」演进路线「v0.1 内存注册表 + TTL 剔除 → v0.2 状态持久化、watch 推送」；`velox-mono/docs/architecture.md` §3.3（mesh→registry 为 pull，push 模式留待 v0.3+）
 
 ## 1. 背景与目标
