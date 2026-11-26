@@ -1,0 +1,15 @@
+[package]
+name = "velox-log"
+description = "velox 共享日志库：本地文件 rotate（硬字节上界/固定三文件）+ 等级链解析 + 无反馈运维报告"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+serde.workspace = true
+anyhow.workspace = true

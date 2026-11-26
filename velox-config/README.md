@@ -43,6 +43,10 @@ curl localhost:8200/api/v1/config/velox-mesh/governance
 | `server.addr` | `0.0.0.0:8200` | `VELOX_CONFIG__SERVER__ADDR` |
 | `server.max_concurrent_requests` | `10` | `VELOX_CONFIG__SERVER__MAX_CONCURRENT_REQUESTS` |
 | `storage.data_dir` | `./data` | `VELOX_CONFIG__STORAGE__DATA_DIR` |
+| `log.dir` | `logs` | `VELOX_CONFIG__LOG__DIR` |
+| `log.level` | `warn` | `VELOX_CONFIG__LOG__LEVEL`（严格语法；`RUST_LOG` 完整语法且优先级最高，调级须重启） |
+
+> 日志（addlog）：进程自身写 `logs/velox-config.log` 并按大小轮转（含活跃共 3 份、单份 200 MiB 硬上限，归档 `.log.1/.log.2`）；默认 `warn` 静默 INFO。详见 [velox-mono/docs/adr/0002-log-rotation.md](../velox-mono/docs/adr/0002-log-rotation.md)。
 
 `server.max_concurrent_requests` 为单实例进程级最大并发处理请求数（≥1，非法值启动失败）。
 默认 10 对高并发部署是行为收紧：超限请求立即收到 429（`code=too_many_requests`，附带 `Retry-After: 1`）；

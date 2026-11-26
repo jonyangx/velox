@@ -27,12 +27,15 @@ fn main() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     let cfg = Config::load(std::env::args().nth(1).as_deref())?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // 日志初始化（addlog）：spawn_blocking 执行启动期同步 IO（建目录/规范化/打开活跃），
+    // 不占用 tokio worker；guard 持有至 run() 结束（尽力排空已入队记录）
+    let log_cfg = cfg.log.clone();
+    let log_level = cfg.log_level.clone();
+    let _log_guard = tokio::task::spawn_blocking(move || {
+        velox_log::init(env!("CARGO_PKG_NAME"), &log_cfg, &log_level)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("日志初始化任务失败：{e}"))??;
 
     let store = Arc::new(Store::open(&cfg.storage.data_dir)?);
 

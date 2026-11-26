@@ -74,6 +74,10 @@ curl "localhost:8300/api/v1/registry/watch?index=3&timeout_secs=30"
 | `persistence.enabled` | `true` | `VELOX_REGISTRY__PERSISTENCE__ENABLED`（仅 `true`/`false`） |
 | `persistence.data_dir` | `./data` | `VELOX_REGISTRY__PERSISTENCE__DATA_DIR` |
 | `persistence.flush_interval_secs` | `5` | `VELOX_REGISTRY__PERSISTENCE__FLUSH_INTERVAL_SECS` |
+| `log.dir` | `logs` | `VELOX_REGISTRY__LOG__DIR` |
+| `log.level` | `warn` | `VELOX_REGISTRY__LOG__LEVEL`（严格语法；`RUST_LOG` 完整语法且优先级最高，调级须重启） |
+
+> 日志（addlog）：进程自身写 `logs/velox-registry.log` 并按大小轮转（含活跃共 3 份、单份 200 MiB 硬上限，归档 `.log.1/.log.2`）；默认 `warn` 静默 INFO（启动/恢复横幅静默，排障用 `RUST_LOG=info`）。详见 [velox-mono/docs/adr/0002-log-rotation.md](../velox-mono/docs/adr/0002-log-rotation.md)。
 
 校验规则（fail fast，错误含配置项名与实际值；**v0.2 起环境变量空字符串不再被忽略，
 而是按非法值拒绝**——GATE2 仲裁定案）：

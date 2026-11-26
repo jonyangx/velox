@@ -36,6 +36,8 @@ pub fn config(data_dir: &str, enabled: bool, ttl_secs: u64, flush_secs: u64) -> 
             data_dir: data_dir.to_string(),
             flush_interval_secs: flush_secs,
         },
+        log: velox_log::LogConfig::default(),
+        log_level: velox_log::ResolvedLevel::default(),
     }
 }
 

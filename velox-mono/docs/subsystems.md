@@ -57,6 +57,11 @@ poll_secs    = 5                # 快照刷新周期
 [proxy]
 connect_timeout_secs = 3
 request_timeout_secs = 30
+
+# 子系统日志（addlog）：进程内轮转，3 份 × 200 MiB；默认 warn
+[log]
+dir = "logs"   # VELOX_MESH__LOG__DIR 可覆盖
+level = "warn" # VELOX_MESH__LOG__LEVEL / RUST_LOG 可覆盖（调级须重启）
 ```
 
 ### 演进路线
@@ -92,6 +97,22 @@ DELETE /api/v1/config/{namespace}/{key}          # 删除
 
 - 逻辑结构：`namespace`（如 `velox-mesh`、`service-a`）→ `key`（如 `governance.toml`）→ JSON 值；
 - 物理存储：`data/{namespace}.json`，内存 HashMAP + 写穿落盘（v0.1 单实例即可）。
+
+### 关键配置
+
+```toml
+[server]
+addr = "0.0.0.0:8200"
+max_concurrent_requests = 10  # 单实例最大并发处理请求数
+
+[storage]
+data_dir = "./data"
+
+# 子系统日志（addlog）：进程内轮转，3 份 × 200 MiB；默认 warn
+[log]
+dir = "logs"   # VELOX_CONFIG__LOG__DIR 可覆盖
+level = "warn" # VELOX_CONFIG__LOG__LEVEL / RUST_LOG 可覆盖（调级须重启）
+```
 
 ### 演进路线
 
@@ -146,6 +167,11 @@ addr = "0.0.0.0:8300"
 [registry]
 heartbeat_ttl_secs   = 30   # 心跳超时阈值
 sweep_interval_secs  = 5    # 后台剔除扫描周期
+
+# 子系统日志（addlog）：进程内轮转，3 份 × 200 MiB；默认 warn
+[log]
+dir = "logs"   # VELOX_REGISTRY__LOG__DIR 可覆盖
+level = "warn" # VELOX_REGISTRY__LOG__LEVEL / RUST_LOG 可覆盖（调级须重启）
 ```
 
 ### 演进路线

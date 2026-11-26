@@ -40,7 +40,10 @@ start_one() {  # $1 = crate, $2 = profile
   [[ -f "$cfg" ]] && cmd+=("$cfg")   # 服务以第一个位置参数接收配置路径
 
   info "启动 $crate（:${VELOX_PORTS[$crate]}，$profile）..."
-  nohup "${cmd[@]}" >>"$VELOX_LOG_DIR/$crate.log" 2>&1 &
+  # addlog：进程自身写 logs/<crate>.log（进程内轮转），脚本不再重定向 stdout/stderr：
+  # stdout 丢弃（终端/容器场景由进程 stdout 双写覆盖）；stderr 匿名管道直达调用端
+  # （启动 fail-fast/panic/轮转运维报告可见，无本地无界副本）
+  nohup "${cmd[@]}" </dev/null >/dev/null 2> >(trap '' HUP; exec cat >&2) &
   echo $! >"$VELOX_RUN_DIR/$crate.pid"
 
   if is_running "$crate" && wait_healthz "$crate"; then
@@ -168,7 +171,8 @@ do_logs() {
   local log="$VELOX_LOG_DIR/$crate.log"
   [[ -f "$log" ]] || die "暂无日志文件：$log（服务可能从未启动过）"
   if [[ "$follow" == true ]]; then
-    exec tail -n "$lines" -f "$log"
+    # tail -F：跟随进程轮转（活跃文件被 rename 后重新打开同名新文件）
+    exec tail -n "$lines" -F "$log"
   else
     tail -n "$lines" "$log"
   fi

@@ -64,6 +64,14 @@ tests/           # 集成测试（起真实 server 打 HTTP）
   - `DEBUG`/`TRACE`：请求级细节；
 - 结构化字段优先于字符串拼接：`tracing::info!(service = %name, instance = %id, "registered")`；
 - 启动日志必须包含：版本、监听地址、配置文件路径、关键配置值。
+- 文件输出与轮转（addlog，ADR-0002）：运行时子系统进程自身写 `logs/<包名>.log`，
+  按大小轮转保留含活跃共 3 份、单份 200 MiB 硬上限（总预算 600 MiB/进程）；
+  归档命名固定 `.log.1/.log.2`。轮转参数为内部常量，不开放生产配置。
+- 默认级别 `warn`：**默认情况下 INFO（含启动横幅）静默**；排障用 `RUST_LOG=info`
+  （完整 EnvFilter 语法，优先级最高）或 `VELOX_<CRATE>__LOG__LEVEL`（严格语法）或
+  配置 `[log].level`；调级须重启。生效非法等级启动失败（fail-fast，错误含实际值与来源）。
+- 目录覆盖：`[log].dir` / `VELOX_<CRATE>__LOG__DIR`（默认相对 cwd 的 `logs`；
+  同机同 crate 多实例必须各自配置不同目录）。
 
 ## 4. API 设计规范
 

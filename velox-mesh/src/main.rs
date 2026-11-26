@@ -35,12 +35,15 @@ fn main() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     let cfg = Config::load(std::env::args().nth(1).as_deref())?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // 日志初始化（addlog）：spawn_blocking 执行启动期同步 IO，不占用 tokio worker；
+    // poller/两个 server 的 JoinHandle 已在下方保存，ctrl_c 路径统一 await 后释放 guard
+    let log_cfg = cfg.log.clone();
+    let log_level = cfg.log_level.clone();
+    let _log_guard = tokio::task::spawn_blocking(move || {
+        velox_log::init(env!("CARGO_PKG_NAME"), &log_cfg, &log_level)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("日志初始化任务失败：{e}"))??;
 
     // 控制面 client：registry 拉取，短超时快速失败走降级
     let control_http = reqwest::Client::builder()

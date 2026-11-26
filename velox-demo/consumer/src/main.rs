@@ -32,12 +32,14 @@ async fn run() -> anyhow::Result<()> {
     let config_path = std::env::args().nth(1);
     let cfg = Config::load(config_path.as_deref())?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // 日志初始化（addlog）：spawn_blocking 执行启动期同步 IO，不占用 tokio worker
+    let log_cfg = cfg.log.clone();
+    let log_level = cfg.log_level.clone();
+    let _log_guard = tokio::task::spawn_blocking(move || {
+        velox_log::init(env!("CARGO_PKG_NAME"), &log_cfg, &log_level)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("日志初始化任务失败：{e}"))??;
 
     // 关停信号：watch 通道扇出给各常驻任务（开发规范第 3.3 节）
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -51,14 +53,14 @@ async fn run() -> anyhow::Result<()> {
     let lifecycle = Arc::new(Lifecycle::new(cfg.registry.clone(), http.clone()));
     let caller = Arc::new(Caller::new(cfg.mesh.endpoint.clone(), http.clone()));
 
-    // 后台任务：注册 + 心跳 + 优雅注销
-    {
+    // 后台任务：注册 + 心跳 + 优雅注销；保存 JoinHandle（addlog §4.6 顺序契约）
+    let lifecycle_task = {
         let lifecycle = Arc::clone(&lifecycle);
         let shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             lifecycle.run(shutdown).await;
-        });
-    }
+        })
+    };
 
     let app = api::router(api::AppState::new(lifecycle, caller));
 
@@ -78,9 +80,13 @@ async fn run() -> anyhow::Result<()> {
         "demo-consumer started"
     );
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
-        .await?;
+    let serve_result = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx.clone()))
+        .await;
+    // 统一收尾：广播关停 → 等 producer 结束 → 传播结果（日志 guard 在 run() 结束时释放）
+    let _ = shutdown_tx.send(true);
+    let _ = lifecycle_task.await;
+    serve_result?;
     Ok(())
 }
 

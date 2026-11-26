@@ -83,16 +83,18 @@ pub fn init_persistence(cfg: &Config) -> anyhow::Result<PersistenceBoot> {
 
 /// 服务装配与运行（main.rs 薄壳调用；架构 §4.4 时序）。
 pub async fn run() -> anyhow::Result<()> {
-    // 1. 配置（解析期拒绝 + validate 在 load 内完成，fail fast，AC-5/G2-3）
+    // 1. 配置（解析期拒绝 + validate/等级链解析在 load 内完成，fail fast）
     let cfg = Config::load(std::env::args().nth(1).as_deref())?;
 
-    // 2. tracing（现状不动）
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // 2. 日志初始化（addlog）：spawn_blocking 执行启动期同步 IO（建目录/规范化/打开活跃），
+    //    不占用 tokio worker；guard 持有至 run() 结束（sweeper/flusher/最终落盘日志先于其释放）
+    let log_cfg = cfg.log.clone();
+    let log_level = cfg.log_level.clone();
+    let _log_guard = tokio::task::spawn_blocking(move || {
+        velox_log::init(env!("CARGO_PKG_NAME"), &log_cfg, &log_level)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("日志初始化任务失败：{e}"))??;
 
     // 3. 持久化初始化（接客之前；恢复/损坏跳过/禁用三路见 init_persistence）
     let boot = init_persistence(&cfg)?;

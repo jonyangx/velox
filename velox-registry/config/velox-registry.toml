@@ -18,3 +18,12 @@ enabled = true
 data_dir = "./data"
 # 心跳脏快照刷盘周期（秒）；启用持久化时必须 < heartbeat_ttl_secs
 flush_interval_secs = 5
+
+# 子系统日志（addlog）：进程自身写本地文件并按大小轮转，保留含活跃共 3 份、
+# 单份 200 MiB 硬上限（总预算 600 MiB/进程；轮转参数为内部常量，不开放生产配置）。
+# 文件：<dir>/<包名>.log（归档 .log.1/.log.2）；默认 warn（静默 INFO，排障用 RUST_LOG=info）。
+# 覆盖：VELOX_<前缀>__LOG__DIR / VELOX_<前缀>__LOG__LEVEL 环境变量（LOG__LEVEL 严格语法，
+# 含空串拒绝；RUST_LOG 保留 EnvFilter 完整语法且优先级最高，调级须重启）。
+[log]
+dir = "logs"
+level = "warn"

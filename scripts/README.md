@@ -52,7 +52,7 @@ scripts/run.sh start                 # 按依赖顺序启动：registry → conf
 scripts/run.sh start mesh --release  # 只启动 mesh（release 产物，需先 build --release）
 scripts/run.sh restart               # 重启全部
 scripts/run.sh status                # 服务状态一览
-scripts/run.sh logs mesh -f          # 跟踪 mesh 日志（Ctrl-C 退出）
+scripts/run.sh logs mesh -f          # 跟踪 mesh 日志（tail -F，跟随轮转；Ctrl-C 退出）
 scripts/run.sh stop                  # 反向顺序停止全部
 ```
 
@@ -61,6 +61,11 @@ scripts/run.sh stop                  # 反向顺序停止全部
 - 启动顺序 `registry(:8300) → config(:8200) → mesh(:8100)`，停止时反向；
 - 每个服务加载自身 `config/velox-<name>.toml`，文件不存在则用内置默认值；
 - 可执行文件缺失时自动触发一次 `build.sh`；`--rebuild` 强制重编；
-- 日志写入 `logs/<crate>.log`，pid 写入 `.run/<crate>.pid`（均已 gitignore）；
-- 启动后自动探测 `/healthz`（约 10s 超时），失败时打印日志尾部辅助排查；
-- 日志级别：`RUST_LOG=debug scripts/run.sh start`。
+- 日志：进程自身写 `logs/<crate>.log`（addlog：进程内按大小轮转，含活跃共 3 份、
+  单份 200 MiB 硬上限；归档 `.log.1/.log.2`），pid 写入 `.run/<crate>.pid`（均已 gitignore）。
+  脚本不再重定向 stdout/stderr（stdout 丢弃、stderr 直达调用端，无无界副本）；
+- 启动后自动探测 `/healthz`（约 10s 超时），失败时打印日志尾部辅助排查
+  （初始化失败信息在本次启动 stderr 上，无第四个日志文件）；
+- 日志级别：默认 `warn`（静默 INFO）。排障用 `RUST_LOG=info`（完整 EnvFilter 语法、
+  优先级最高），或 `VELOX_<CRATE>__LOG__LEVEL`（严格语法：裸等级或 `target=level`）；
+  也可改配置 `[log].level`；调级须重启。目录覆盖：`VELOX_<CRATE>__LOG__DIR` / `[log].dir`。

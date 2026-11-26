@@ -66,6 +66,10 @@ curl localhost:8100/proxy/demo/api/v1/ping
 | `server.inbound_addr` | `0.0.0.0:8100` | `VELOX_MESH__SERVER__INBOUND_ADDR` |
 | `server.admin_addr` | `127.0.0.1:8101` | `VELOX_MESH__SERVER__ADMIN_ADDR` |
 | `registry.endpoint` | `http://127.0.0.1:8300` | `VELOX_MESH__REGISTRY__ENDPOINT` |
+| `log.dir` | `logs` | `VELOX_MESH__LOG__DIR` |
+| `log.level` | `warn` | `VELOX_MESH__LOG__LEVEL`（严格语法；`RUST_LOG` 完整语法且优先级最高，调级须重启） |
+
+> 日志（addlog）：进程自身写 `logs/velox-mesh.log` 并按大小轮转（含活跃共 3 份、单份 200 MiB 硬上限，归档 `.log.1/.log.2`）；默认 `warn` 静默 INFO（启动横幅），排障用 `RUST_LOG=info`。详见 [velox-mono/docs/adr/0002-log-rotation.md](../velox-mono/docs/adr/0002-log-rotation.md)。
 | `registry.poll_secs` | `5` | `VELOX_MESH__REGISTRY__POLL_SECS` |
 | `proxy.connect_timeout_secs` | `3` | `VELOX_MESH__PROXY__CONNECT_TIMEOUT_SECS` |
 | `proxy.request_timeout_secs` | `30` | `VELOX_MESH__PROXY__REQUEST_TIMEOUT_SECS` |

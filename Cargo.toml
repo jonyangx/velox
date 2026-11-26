@@ -6,6 +6,7 @@ members = [
     "velox-registry",
     "velox-demo/provider",
     "velox-demo/consumer",
+    "velox-log",
 ]
 
 [workspace.package]
@@ -22,8 +23,10 @@ axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+velox-log = { path = "velox-log" }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-appender = { version = "=0.2.4", default-features = false }
 anyhow = "1"
 thiserror = "2"
 futures = "0.3"

@@ -31,12 +31,14 @@ async fn run() -> anyhow::Result<()> {
     let config_path = std::env::args().nth(1);
     let cfg = Config::load(config_path.as_deref())?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // 日志初始化（addlog）：spawn_blocking 执行启动期同步 IO，不占用 tokio worker
+    let log_cfg = cfg.log.clone();
+    let log_level = cfg.log_level.clone();
+    let _log_guard = tokio::task::spawn_blocking(move || {
+        velox_log::init(env!("CARGO_PKG_NAME"), &log_cfg, &log_level)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("日志初始化任务失败：{e}"))??;
 
     // 关停信号：watch 通道扇出给各常驻任务（开发规范第 3.3 节）
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -49,11 +51,12 @@ async fn run() -> anyhow::Result<()> {
     let lifecycle = Arc::new(Lifecycle::new(cfg.registry.clone(), http.clone()));
     let greeting = Arc::new(Greeting::new());
 
-    // 后台任务：注册 + 心跳（registry 可能晚于本服务启动，内部自带退避重试）
-    tokio::spawn(Arc::clone(&lifecycle).run(shutdown_rx.clone()));
+    // 后台任务：注册 + 心跳（registry 可能晚于本服务启动，内部自带退避重试）；
+    // 保存 JoinHandle：关停时先等 producer 结束再释放日志 guard（addlog §4.6 顺序契约）
+    let lifecycle_task = tokio::spawn(Arc::clone(&lifecycle).run(shutdown_rx.clone()));
 
     // 后台任务：周期刷新问候语模板
-    tokio::spawn(Arc::clone(&greeting).run_config_refresh(
+    let greeting_task = tokio::spawn(Arc::clone(&greeting).run_config_refresh(
         cfg.config_center.clone(),
         http.clone(),
         shutdown_rx.clone(),
@@ -77,9 +80,14 @@ async fn run() -> anyhow::Result<()> {
         "demo-provider started"
     );
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
-        .await?;
+    let serve_result = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx.clone()))
+        .await;
+    // 统一收尾：广播关停 → 等 producer 结束 → 传播结果（日志 guard 在 run() 结束时释放）
+    let _ = shutdown_tx.send(true);
+    let _ = lifecycle_task.await;
+    let _ = greeting_task.await;
+    serve_result?;
     Ok(())
 }
 

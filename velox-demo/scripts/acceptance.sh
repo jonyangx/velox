@@ -79,13 +79,15 @@ wait_json_eq() {  # $1 描述 $2 url $3 jq 过滤器 $4 期望值 $5 超时秒 $
 
 start_demo() {  # $1 运行名（.run/<名>.pid + logs/<名>.log） $2 二进制名 $3 配置路径 其后 VAR=VAL...
   local name="$1" bin="$2" cfg="$3"; shift 3
-  local pidfile="$VELOX_RUN_DIR/$name.pid" log="$VELOX_LOG_DIR/$name.log"
+  local pidfile="$VELOX_RUN_DIR/$name.pid"
   if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
     die "$name 已在运行（pid $(cat "$pidfile")），请先清理后再验收"
   fi
   mkdir -p "$VELOX_RUN_DIR" "$VELOX_LOG_DIR"
   info "启动 $name（覆盖：$*）..."
-  nohup env "$@" "$BUILD_BIN/$bin" "$cfg" >>"$log" 2>&1 &
+  # addlog：进程自身写日志（默认 logs/<bin>.log），脚本不再创建副本；
+  # stderr 匿名管道直达调用端（启动失败/运维报告可见）
+  nohup env "$@" "$BUILD_BIN/$bin" "$cfg" </dev/null >/dev/null 2> >(trap '' HUP; exec cat >&2) &
   echo $! >"$pidfile"
 }
 
@@ -221,10 +223,15 @@ assert_json_eq "consumer status registered" "$CONS_URL/api/v1/consumer/status" '
 
 # 4.6 扩容第二 provider 实例（:9001）验证轮询 LB
 info "── 4.6 扩容与轮询 LB ──"
+# addlog：同包多实例必须分目录（同名 .log 会互踩）；
+# 启动前精确清理旧设计的运行名副本（demo-provider-2.log / demo-provider-2.stderr.log），
+# 不删除其他包日志（§4.7/§4.2.3）
+rm -f "$VELOX_LOG_DIR/demo-provider-2.log" "$VELOX_LOG_DIR/demo-provider-2.stderr.log"
 start_demo demo-provider-2 demo-provider "$PROV_CFG" \
   VELOX_PROVIDER__SERVER__ADDR=0.0.0.0:9001 \
   VELOX_PROVIDER__REGISTRY__ADVERTISE_PORT=9001 \
-  VELOX_PROVIDER__REGISTRY__HEARTBEAT_INTERVAL_SECS=2
+  VELOX_PROVIDER__REGISTRY__HEARTBEAT_INTERVAL_SECS=2 \
+  VELOX_PROVIDER__LOG__DIR="$VELOX_LOG_DIR/demo-provider-2"
 wait_json_eq "registry demo-provider 健康实例数=2" \
   "$REG_URL/api/v1/registry/services/demo-provider/instances?healthy=true" 'length' 2 15
 # mesh 快照每 poll_secs=5 刷新，等它看到 2 个实例再打流量

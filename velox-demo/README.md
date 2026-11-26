@@ -118,7 +118,7 @@ host 模式端到端验收，任一断言失败即打印原始响应并 `exit 1`
 | 0 前置 | jq/curl 存在；demo 配置文件在位；7 个固定端口空闲 |
 | 1 编译 | `scripts/build.sh`（core 三件套）+ `cargo build -p demo-provider -p demo-consumer` |
 | 2 启动 core | `VELOX_REGISTRY__REGISTRY__HEARTBEAT_TTL_SECS=6`、`SWEEP_INTERVAL_SECS=2` 后 `scripts/run.sh start`（短 TTL 仅限验收环境） |
-| 3 启动 demo | provider / consumer 各带 `HEARTBEAT_INTERVAL_SECS=2`，pid 放 `.run/`、日志放 `logs/` |
+| 3 启动 demo | provider / consumer 各带 `HEARTBEAT_INTERVAL_SECS=2`，pid 放 `.run/`；进程自身写日志到 `logs/`（addlog 轮转；第二 provider 实例分目录 `logs/demo-provider-2/`） |
 | 4.1 健康检查 | 6 个 `/healthz`：registry :8300、config :8200、mesh :8100 与 :8101、provider :9000、consumer :9100 |
 | 4.2 注册发现 | registry 服务清单含 demo-provider/demo-consumer，且 `?healthy=true` 各恰 1 实例 |
 | 4.3 直连 | provider greeting `template_source = builtin` |

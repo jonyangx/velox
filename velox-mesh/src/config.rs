@@ -1,6 +1,7 @@
 //! 配置加载：TOML 文件（可选）+ 环境变量覆盖（`VELOX_MESH__<SECTION>__<FIELD>`）。
 
 use serde::Deserialize;
+use velox_log::{LogConfig, ResolvedLevel};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -8,6 +9,12 @@ pub struct Config {
     pub server: ServerConfig,
     pub registry: RegistryConfig,
     pub proxy: ProxyConfig,
+
+    /// 日志配置（addlog）：目录/等级；`log_level` 为 load 末尾解析的生效等级
+    /// 与来源（不参与 TOML 反序列化，由 resolve_level 填充）。
+    pub log: LogConfig,
+    #[serde(skip)]
+    pub log_level: ResolvedLevel,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,6 +98,16 @@ impl Config {
                 .parse()
                 .map_err(|_| anyhow::anyhow!("非法 REQUEST_TIMEOUT_SECS：'{v}'"))?;
         }
+
+        // 日志目录 env 覆盖（沿用非空 env_override 惯例）；level 不经该 helper，
+        // 由 resolve_level 直接读 var_os（保留空串语义，见 velox-log §4.4）
+        if let Some(v) = env_override("VELOX_MESH__LOG__DIR") {
+            cfg.log.dir = v;
+        }
+        // 等级链解析（addlog）：失败 fail-fast（AC-10），真实配置路径作为文件来源上下文
+        let abs_path = path.map(|p| velox_log::absolutize(std::path::Path::new(p)));
+        cfg.log_level = velox_log::resolve_level(&cfg.log, abs_path.as_deref(), "MESH")?;
+
         Ok(cfg)
     }
 }
