@@ -1,7 +1,7 @@
 # 需求分析：log-to-common（velox-log 重构为 velox-common，log 作为其中一个组件）
 
-> 工序：F-SA，v1 首轮（无返工反馈）。
-> 调研基线：develop 分支 @ `cf75e33`；工作树含 `velox-config/src/limit.rs` 既有 rustfmt 改动（非本 feature 范围，原样保留、不得混入本 feature 提交）。
+> 工序：F-SA，v2 返工轮 1/2（按 F-GATE1 首轮评审意见修订，见 01-requirements-review.md §3/§4：QA-1 触点补列+AC-3 命令完备化、QA-2 措辞修正；另同步合并后基线与行号锚点）。
+> 调研基线：develop 分支 @ `638f5eb`（= v1 基线 `cf75e33` 并入 origin/develop `e1a8738`「velox-config SQLite 存储迁移」的合并提交）。v1 时在途的 `velox-config/src/limit.rs` rustfmt 改动已随合并消解（与 e1a8738 迁移后形态一致，经核验冗余并清理），本 feature 仍不得改动 `limit.rs`。velox-config 代码锚点与 subsystems.md 锚点已按合并后现状刷新，其余锚点与 v1 一致。
 > 说明：`docs/specs/log-to-common/03-test-cases.md` 为并行工序 F-TA-C 的产物，与本文并行消费同一原始诉求；本文「待确认问题」编号（OP-1~OP-6）与该文已使用的 OP-1~OP-4 保持兼容并扩展，供后续 F-TA-D 合并仲裁。
 
 ## 1. 背景与目标
@@ -30,7 +30,7 @@
 ### FR-2 log 组件能力无损迁移
 
 - **作为**五个运行时二进制的维护者，**在**crate 结构重构场景，**期望**：日志全部能力原样迁入 `velox-common` 的 log 组件，公共 API 对外可见形态等价：
-  - 对外 API 面（现状核实，消费方实际使用的全集）：`LogConfig`、`ResolvedLevel`（含 `filter()`/`source_display()`/`LevelSource`）、`resolve_level`、`absolutize`、`init`、`LogGuard`，常量 `MAX_FILE_BYTES`/`KEEP_FILES`/`MAX_EVENT_BYTES`/`QUEUE_EVENTS`；
+  - 对外 API 面（现状核实：消费方实际使用的 API 全集 + crate 公开常量 4 项）：`LogConfig`、`ResolvedLevel`（含 `filter()`/`source_display()`/`LevelSource`）、`resolve_level`、`absolutize`、`init`、`LogGuard`，常量 `MAX_FILE_BYTES`/`KEEP_FILES`/`MAX_EVENT_BYTES`/`QUEUE_EVENTS`；
   - 内部模块 `bounded`/`filter`/`report`/`rotate` 现状为 `pub mod` + `pub(crate)` 条目（外部本就不可见），迁移后保持同等可见性，不因重构意外扩大或收窄；
   - crate 内 28 例单测（`velox-log/src/tests.rs`）全部随迁，数量与语义一一对应，测试注入式设计（`EnvInputs` map 注入、`FaultFs`、`TestReportSink`、`RotationLimits::injected`）不破坏；
   - 文档注释（`//!`）随迁移更新为新结构口径（crate 名、BRD/ADR 指向），不保留指向已消失 crate 的自述。
@@ -46,7 +46,7 @@
 
 - **作为**构建系统，**在**crate 改名场景，**期望**：
   - 根 `Cargo.toml`：members 列表 `"velox-log"` → `"velox-common"`（行 9）；`[workspace.dependencies]` `velox-log = { path = "velox-log" }` → `velox-common = { path = "velox-common" }`（行 26）；
-  - `Cargo.lock` 同一变更内重新生成并提交：现存 velox-log 条目（`Cargo.lock` 中 6 处出现：包定义 1 处 + 五包依赖列表各 1 处，行 181/200/1537/1541/1567/1585）全部更新为 velox-common 对应条目；
+  - `Cargo.lock` 同一变更内重新生成并提交：现存 velox-log 条目（`Cargo.lock` 中 6 处出现：包定义 1 处 + 五包依赖列表各 1 处，行 181/200/1626/1630/1656/1674；v1 的 1537/1541/1567/1585 系 e1a8738 合并前的行号）全部更新为 velox-common 对应条目；
   - `cargo build --workspace --locked` 通过（lock 与 manifests 失同步时 `--locked` 会失败，故 lock 必须随同提交）。
 
 ### FR-5 旧名残留清理（分层口径）
@@ -61,7 +61,7 @@
 
 - **作为**文档读者，**在**查阅架构/子系统文档场景，**期望**活文档描述与真实 crate 结构一致：
   - `velox-mono/docs/adr/0002-log-rotation.md`：现存 6 处 velox-log 字面（标题、D1 决策行 18、依赖配置示例行 41、`cargo tree -p velox-log` 证据行 46/57、边界说明行 58），按 OP-4 处置（建议默认：新增 ADR 记录本次结构重构决策 + 0002 顶部加 superseded/更名注记，0002 正文不改写）；
-  - `velox-mono/docs/subsystems.md:61,111,171`（三处 `[log]` 配置段注释「子系统日志（addlog）」）与 `velox-mono/docs/development.md:67`（「文件输出与轮转（addlog，ADR-0002）」）：经核实**不含 velox-log 字面**，仅使用 addlog 历史术语——是否顺带统一见 OP-6（建议默认不动，仅核对描述行为仍准确）；
+  - `velox-mono/docs/subsystems.md:61,113,173`（三处 `[log]` 配置段注释「子系统日志（addlog）」；111→113、171→173 系 e1a8738 合并在前文插入 SQLite 内容所致）与 `velox-mono/docs/development.md:67`（「文件输出与轮转（addlog，ADR-0002）」）：经核实**不含 velox-log 字面**，仅使用 addlog 历史术语——是否顺带统一见 OP-6（建议默认不动，仅核对描述行为仍准确）；
   - `architecture.md`、根 `README.md`：已 grep 核实无 velox-log/velox_log/addlog 字面引用，本项无改动义务；
   - `velox-mono/docs/specs/_pipeline-state.md`：含 velox-log 引用（2 处）但属流水线在途状态文件，按范围约束**不触碰**。
 
@@ -92,7 +92,7 @@
 
 ### NFR-3 工作树纪律
 
-- `velox-config/src/limit.rs` 既有 rustfmt 改动原样保留，不混入本 feature 提交（提交内容须可按文件剥离）；
+- 不触碰 `velox-config/src/limit.rs`（v1 时在途的 rustfmt 改动已随 e1a8738 合并消解；本 feature 提交 diff 仍须不含该文件）；
 - `velox-mono/docs/specs/_pipeline-state.md`、运行数据（`logs/`、`data/`）、`velox-mono/docs/brd/`（未跟踪）不入库不触碰。
 
 ### NFR-4 依赖与元数据最小扰动
@@ -121,8 +121,8 @@
 ### AC-3（对应 FR-3）五包接入点切换完整（含测试资产）
 
 - Given 五包工作区；
-- When ① `grep -rn "velox_log" --include="*.rs" velox-config/src velox-registry/src velox-registry/tests velox-mesh/src velox-demo`；② 逐包检查 Cargo.toml 依赖声明；③ `cargo build --workspace`；
-- Then ① 源码与测试代码零 `velox_log` 残留（含 `velox-registry/tests/common/mod.rs:39-40`）；② 五包依赖声明统一指向 velox-common 且走 workspace 引用；③ 编译零错误零警告。
+- When ① `grep -rn "velox-log\|velox_log" --include="*.rs" velox-config/src velox-registry/src velox-registry/tests velox-mesh/src velox-demo`（两种形式同查，覆盖注释字面残留）；② 逐包检查 Cargo.toml 依赖声明；③ `cargo build --workspace`；
+- Then ① 源码与测试代码零 `velox-log`/`velox_log` 残留（连字符注释字面在检查面内；含 `velox-registry/tests/common/mod.rs:39-40`）；② 五包依赖声明统一指向 velox-common 且走 workspace 引用；③ 编译零错误零警告。
 
 ### AC-4（对应 FR-4）依赖图与 lock 一致
 
@@ -194,20 +194,21 @@
 |---|---|
 | `velox-log/`（整目录） | `Cargo.toml`、`src/lib.rs`(295)、`src/rotate.rs`(672)、`src/filter.rs`(242)、`src/report.rs`(370)、`src/bounded.rs`(113)、`src/tests.rs`(1654，28 例) → 迁入 `velox-common/` log 组件 |
 | `Cargo.toml`（根） | `:9` members、`:26` `[workspace.dependencies]` path 依赖 |
-| `Cargo.lock` | velox-log 条目与五包依赖列表共 6 处（行 181/200/1537/1541/1567/1585）随重生成更新 |
+| `Cargo.lock` | velox-log 条目与五包依赖列表共 6 处（行 181/200/1626/1630/1656/1674，e1a8738 合并后）随重生成更新 |
 | `velox-config/Cargo.toml:11`、`velox-registry/Cargo.toml:11`、`velox-mesh/Cargo.toml:11`、`velox-demo/provider/Cargo.toml:11`、`velox-demo/consumer/Cargo.toml:11` | `velox-log.workspace = true` → velox-common |
-| `velox-config/src/config.rs:4,106-107`；`velox-config/src/main.rs:35` | `use velox_log::{LogConfig, ResolvedLevel}`、`velox_log::absolutize`、`velox_log::resolve_level`、`velox_log::init` |
+| `velox-config/src/config.rs:4,124-125`；`velox-config/src/main.rs:36` | `use velox_log::{LogConfig, ResolvedLevel}`、`velox_log::absolutize`、`velox_log::resolve_level`、`velox_log::init` |
 | `velox-registry/src/config.rs:10,134-135`；`velox-registry/src/lib.rs:94`；`velox-registry/tests/common/mod.rs:39-40` | 同上 + 测试夹具 `LogConfig::default()`/`ResolvedLevel::default()`（测试侧触点） |
 | `velox-mesh/src/config.rs:4,108-109`；`velox-mesh/src/main.rs:43` | 同 config 模式 |
 | `velox-demo/provider/src/config.rs:7,137-138`；`velox-demo/provider/src/main.rs:38` | 同 config 模式 |
 | `velox-demo/consumer/src/config.rs:7,132-133`；`velox-demo/consumer/src/main.rs:39` | 同 config 模式 |
+| 五包 `src/config.rs` 注释触点（连字符字面，FR-5 层①清零范围） | `velox-config/src/config.rs:119`、`velox-registry/src/config.rs:129`、`velox-mesh/src/config.rs:103`、`velox-demo/provider/src/config.rs:132`、`velox-demo/consumer/src/config.rs:127` 各 1 处「见 velox-log §4.4」注释字面 |
 
 ### 8.2 文档清单（活文档须改，历史工件默认豁免）
 
 | 文件 | 现状 | 处置 |
 |---|---|---|
 | `velox-mono/docs/adr/0002-log-rotation.md` | 6 处 velox-log 字面（行 1/18/41/46/57/58） | OP-4 默认：新增 ADR + 0002 注记 |
-| `velox-mono/docs/subsystems.md` | `:61/:111/:171` 三处「子系统日志（addlog）」注释，无 velox-log 字面 | OP-6 默认：不动，核对准确性 |
+| `velox-mono/docs/subsystems.md` | `:61/:113/:173` 三处「子系统日志（addlog）」注释，无 velox-log 字面（113/173 系 e1a8738 合并后行号） | OP-6 默认：不动，核对准确性 |
 | `velox-mono/docs/development.md` | `:67`「（addlog，ADR-0002）」，无 velox-log 字面 | OP-6 默认：不动 |
 | `velox-mono/docs/architecture.md`、根 `README.md` | 无 velox-log/velox_log/addlog 字面（已核实） | 无改动义务 |
 | `velox-mono/docs/specs/addlog/01~05`（含 review 共 7 文件）、`specs/instance-concurrency-limit/04-test-report.md:81`、`05-acceptance.md:86` | 历史工件含 velox-log 引用 | OP-3 默认：原样保留，不计残留 |

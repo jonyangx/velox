@@ -120,3 +120,36 @@ velox-demo/consumer/src/config.rs:127 // 同上
 ## 5. 复审说明
 
 SA 按上述清单修订 01-requirements.md（v2）后重派 F-GATE1 复审；复审范围以本轮问题清单与修改清单为焦点，其余部分不重复全量评审。返工预算：本轮记 1/2。
+
+## 6. 复审记录（v2 返工轮，GATE1 复审）
+
+> 复审对象：01-requirements.md **v2**（227 行，SHA256 前 16 位 `161566e203fc795a`），基于合并后基线 develop @ `638f5eb`。
+> 复审口径：按 §5 约定，以首轮问题清单与 §4 修改清单为焦点，不重复全量评审。
+> 角色说明：返工修订由本会话按评审清单代执行 SA 职责（3 项均为机械修订、无设计自由度），复审独立逐项核对。
+
+### 6.1 修改清单逐项核对
+
+| # | 修改项 | 核对结果 | 证据 |
+|---|---|---|---|
+| 1 | §8.1 补五包注释 5 处连字符触点 | ✅ 通过 | v2 §8.1 新增行（v2:204）：`velox-config/src/config.rs:119`、`velox-registry/src/config.rs:129`、`velox-mesh/src/config.rs:103`、`velox-demo/provider/src/config.rs:132`、`velox-demo/consumer/src/config.rs:127`，与 `638f5eb` 实测逐一吻合（config.rs 注释触点 101→119 系 e1a8738 合并插入 cache 覆盖块所致，已同步） |
+| 2 | AC-3 判定命令完备化 | ✅ 通过 | v2 AC-3 When①（v2:124）扩为 `grep -rn "velox-log\|velox_log" --include="*.rs" …`；Then①（v2:125）同步声明「零 velox-log/velox_log 残留（连字符注释字面在检查面内）」，FR-3 自洽性恢复 |
+| 3 | FR-2 措辞修正（QA-2） | ✅ 通过 | v2 FR-2（v2:33）改为「消费方实际使用的 API 全集 + crate 公开常量 4 项」，与全仓 grep 实测（常量消费方零引用）一致；保护面（6 API+4 常量等价）不变 |
+
+### 6.2 基线同步核对（超清单修订，逐项复核）
+
+返工修订同时将 v1 基线事实同步至合并后现状（`e1a8738`「velox-config SQLite 存储迁移」并入所致），逐项实测通过：
+
+| 项 | v1 | v2 | 实测 |
+|---|---|---|---|
+| 基线 | develop @ `cf75e33`，limit.rs 在途改动 | develop @ `638f5eb`（合并提交），limit.rs 在途改动已消解 | ✅ git 实况一致；stash 冗余性经两 hunk 比对确认后清理 |
+| NFR-3 limit.rs 条目 | 「既有 rustfmt 改动原样保留」 | 「不触碰 limit.rs（改动已随合并消解），提交 diff 仍须不含该文件」 | ✅ 纪律语义保持，事实更新 |
+| velox-config 代码锚点 | config.rs:4,106-107；main.rs:35 | config.rs:4,**124-125**；main.rs:**36** | ✅ 实测命中（124-125/36） |
+| Cargo.lock 条目行号 | 181/200/1537/1541/1567/1585 | 181/200/**1626/1630/1656/1674** | ✅ grep 实测命中（181/200 未变） |
+| subsystems.md 锚点 | :61/:111/:171 | :61/**113**/**173** | ✅ 实测命中（e1a8738 在前文插入 SQLite 内容） |
+| 根 Cargo.toml:9/26、adr/0002 六处、development.md:67、velox-log 六文件 3346 行、registry 测试触点 | — | 不变 | ✅ 合并未触及，复核仍成立 |
+
+### 6.3 复审结论
+
+**PASS（GATE1 复审通过）**。修改清单 3 项全部按意见落实且与实测一致；基线同步修订经逐项实测无引入性错误；未发现新的可判定性/遗漏问题。FR/AC 可判定性、边界承接、范围外、OP 默认方案、需求忠实度在 v2 下全部成立。F-GATE1 关口通过（首轮 REWORK 1/2 后复审收口），流水线可推进 F-AA ∥ F-TA-D。
+
+遗留提示（不阻塞）：OP-1~OP-6 留待 GATE2 仲裁；QA-3（OP-4 若采纳默认方案须补「新增 ADR 文件」产出项）在 GATE2 仲裁时处置。
