@@ -5,6 +5,8 @@ addr = "0.0.0.0:8200"
 max_concurrent_requests = 10  # 单实例最大并发处理请求数，合法域 1..=U（U=min(i64::MAX, usize::MAX, Semaphore::MAX_PERMITS)，随平台）
 
 [storage]
+# SQLite 库文件 velox-config.db（及 WAL/SHM 副文件）所在目录；
+# 首次启动会自动导入目录中的旧版 {namespace}.json 并改名 .json.migrated
 data_dir = "./data"
 
 # 子系统日志（addlog）：进程自身写本地文件并按大小轮转，保留含活跃共 3 份、
@@ -15,3 +17,8 @@ data_dir = "./data"
 [log]
 dir = "logs"
 level = "warn"
+
+[cache]
+# namespace 读缓存 TTL（秒）：写操作即时驱逐缓存（读己之写不受影响）；
+# 0 = 禁用缓存
+ttl_secs = 300

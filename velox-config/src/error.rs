@@ -16,7 +16,7 @@ impl From<StoreError> for AppError {
     }
 }
 
-/// 限流拒绝：由 limit::guard 在 handler 之前直接产生，不经过 `StoreError`/`AppError`。
+/// 限流拒绝：由 `limit::guard` 在 handler 之前直接产生，不经过 `StoreError`/`AppError`。
 /// 错误 → HTTP 响应的构造仍收敛在本文件（Q3 默认方案：Retry-After: 1）。
 #[derive(Debug, Clone, Copy)]
 pub struct TooManyRequests {
@@ -43,7 +43,7 @@ impl IntoResponse for AppError {
             StoreError::InvalidNamespace(_) => (StatusCode::BAD_REQUEST, "invalid_namespace"),
             StoreError::NotFound { .. } => (StatusCode::NOT_FOUND, "config_not_found"),
             // 存储层内部故障：对外收敛为统一 message，细节留在日志
-            StoreError::Io(_) | StoreError::Json(_) => {
+            StoreError::Io(_) | StoreError::Json(_) | StoreError::Sqlite(_) => {
                 tracing::error!(error = %self.0, "config store internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "storage_internal_error")
             }

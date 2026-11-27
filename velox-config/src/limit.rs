@@ -46,10 +46,7 @@ pub(crate) async fn guard(
                 path = %req.uri().path(),
                 "request rejected: instance concurrency limit reached"
             );
-            TooManyRequests {
-                limit: limit.max(),
-            }
-            .into_response()
+            TooManyRequests { limit: limit.max() }.into_response()
         }
     }
 }
@@ -241,7 +238,11 @@ mod tests {
         started_rx.recv().await.unwrap();
 
         // 名额已占满，但豁免路由（注册在限流层之外）正常返回
-        let res = app.clone().oneshot(request("GET", "/healthz")).await.unwrap();
+        let res = app
+            .clone()
+            .oneshot(request("GET", "/healthz"))
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
         // 对照：业务路由同刻被拒

@@ -4,6 +4,7 @@
 //! 不做服务发现、不做配置校验规则。main 只负责装配。
 
 mod api;
+mod cache;
 mod config;
 mod error;
 mod limit;
@@ -37,7 +38,8 @@ async fn run() -> anyhow::Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("日志初始化任务失败：{e}"))??;
 
-    let store = Arc::new(Store::open(&cfg.storage.data_dir)?);
+    let cache_ttl = std::time::Duration::from_secs(cfg.cache.ttl_secs);
+    let store = Arc::new(Store::open(&cfg.storage.data_dir, cache_ttl)?);
 
     let app = api::router(store, cfg.max_concurrent_requests());
     let addr: SocketAddr = cfg
@@ -51,6 +53,7 @@ async fn run() -> anyhow::Result<()> {
         addr = %addr,
         data_dir = %cfg.storage.data_dir,
         max_concurrent_requests = cfg.max_concurrent_requests(), // NFR-2 / AC-5、AC-7
+        cache_ttl_secs = cfg.cache.ttl_secs,
         "velox-config started"
     );
 

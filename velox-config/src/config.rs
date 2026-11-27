@@ -14,6 +14,7 @@ pub struct Config {
     pub log: LogConfig,
     #[serde(skip)]
     pub log_level: ResolvedLevel,
+    pub cache: CacheConfig,
 }
 
 const DEFAULT_MAX_CONCURRENT_REQUESTS: i64 = 10;
@@ -70,6 +71,18 @@ impl Default for StorageConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheConfig {
+    /// namespace 读缓存 TTL（秒）；0 = 禁用缓存
+    pub ttl_secs: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self { ttl_secs: 300 } // 默认 5 分钟
+    }
+}
+
 impl Config {
     /// `path` 为命令行传入的配置文件路径；缺省时全部使用默认值。
     pub fn load(path: Option<&str>) -> anyhow::Result<Self> {
@@ -93,6 +106,11 @@ impl Config {
                 anyhow::anyhow!(
                     "非法配置 VELOX_CONFIG__SERVER__MAX_CONCURRENT_REQUESTS：'{v}'（要求 ≥1 的整数）"
                 )
+            })?;
+        }
+        if let Some(v) = env_override("VELOX_CONFIG__CACHE__TTL_SECS") {
+            cfg.cache.ttl_secs = v.parse().map_err(|e| {
+                anyhow::anyhow!("解析环境变量 VELOX_CONFIG__CACHE__TTL_SECS '{v}' 失败：{e}")
             })?;
         }
         cfg.validate()?;
@@ -200,7 +218,7 @@ mod tests {
         });
     }
 
-    /// FR-5.3：空字符串 env 沿用 env_override 过滤语义，回落默认 10
+    /// FR-5.3：空字符串 env 沿用 `env_override` 过滤语义，回落默认 10
     #[test]
     fn env_empty_falls_back() {
         with_env_cleaned(|| {
